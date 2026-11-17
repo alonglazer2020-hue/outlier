@@ -1,8 +1,8 @@
 {
-  "name": "outlier",
+  "name": "oddity",
   "version": "1.0.0",
   "private": true,
-  "description": "Rarest-answer trivia: daily, unlimited and multiplayer.",
+  "description": "ODDITY: name the answer nobody else would.",
   "type": "module",
   "main": "server.js",
   "scripts": {

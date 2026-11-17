@@ -1,360 +1,443 @@
-import { GENRES, PROMPTS, TIERS, judge, rarer, dailyPrompts, todayKey, dayNumber, msToNextDay, pickPrompts, genreOf, promptById, sigma, DAILY_COUNT, DAILY_SECONDS } from './engine.js';
+import { GENRES, PROMPTS, TIERS, judge, rarer, dailyPrompts, todayKey, missionNumber, dateOfMission, msToNextDay, pickPrompts, genreOf, promptById, reached, distanceKm, fmtDistance, DAILY_COUNT, DAILY_SECONDS } from './engine.js';
+import { createScene } from './scene.js';
+import { sfx } from './sound.js';
 
 // ---------- utilities ----------
 const $ = (s, el = document) => el.querySelector(s);
 const app = $('#app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
-  get(k, d) { try { const v = localStorage.getItem('outlier:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem('outlier:' + k, JSON.stringify(v)); } catch {} },
+  get(k, d) { try { const v = localStorage.getItem('oddity:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('oddity:' + k, JSON.stringify(v)); } catch {} },
 };
 const clientId = store.get('id') || (() => {
   const id = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)).replace(/[^a-z0-9-]/gi, '');
   store.set('id', id); return id;
 })();
-const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const title = s => s.replace(/(^|[\s(-])([a-z])/g, (m, a, b) => a + b.toUpperCase());
+const cap = s => s.replace(/(^|[\s(-])([a-z])/g, (m, a, b) => a + b.toUpperCase());
+const total = picks => picks.reduce((s, p) => s + (p.ok ? p.points : 0), 0);
+const dist = pts => fmtDistance(distanceKm(pts));
+const fmtDate = k => new Date(k + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtTime = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return [s / 3600, (s % 3600) / 60, s % 60].map(n => String(Math.floor(n)).padStart(2, '0')).join(':'); };
+const prevDay = k => new Date(Date.parse(k) - 864e5).toISOString().slice(0, 10);
+let name = store.get('name', '');
+const saveName = v => { name = v.replace(/[<>]/g, '').trim().slice(0, 16); store.set('name', name); };
+const ensureName = () => { if (!name) saveName('Pilot ' + Math.floor(100 + Math.random() * 900)); return name; };
+
+// Pixel icons drawn from 8x8 maps.
+const pxIcon = rows => `<svg class="icon" viewBox="0 0 8 8" aria-hidden="true">${rows.flatMap((r, y) => [...r].map((c, x) => (c === '#' ? `<rect x="${x}" y="${y}" width="1" height="1"/>` : ''))).join('')}</svg>`;
 const ICON = {
-  back: '<svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>',
-  close: '<svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>',
-  arrow: '<svg class="icon" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
-  share: '<svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5a2 2 0 002 2h10a2 2 0 002-2v-5"/></svg>',
-  people: '<svg class="icon" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 010 6.8M18 14.8c1.9.7 3.1 2.4 3.5 5.2"/></svg>',
-  bolt: '<svg class="icon" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
-  plus: '<svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
-  chev: '<svg class="icon" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
-  copy: '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/></svg>',
+  back: pxIcon(['....#...', '...#....', '..#.....', '.#######', '..#.....', '...#....', '....#...', '........']),
+  close: pxIcon(['#......#', '.#....#.', '..#..#..', '...##...', '...##...', '..#..#..', '.#....#.', '#......#']),
+  up: pxIcon(['...##...', '..####..', '.######.', '...##...', '...##...', '...##...', '...##...', '........']),
+  sound: pxIcon(['....#...', '...##.#.', '####..#.', '####.#.#', '####.#.#', '####..#.', '...##.#.', '....#...']),
+  mute: pxIcon(['....#...', '...##...', '####.#.#', '####..#.', '####..#.', '####.#.#', '...##...', '....#...']),
+  share: pxIcon(['...##...', '..####..', '...##...', '...##...', '#..##..#', '#......#', '#......#', '########']),
+  copy: pxIcon(['..######', '..#....#', '###....#', '#.#....#', '#.######', '#....#..', '######..', '........']),
+  people: pxIcon(['.##...##', '.##...##', '........', '####.###', '####.###', '####.###', '........', '........']),
+  loop: pxIcon(['........', '.##..##.', '#..##..#', '#..##..#', '.##..##.', '........', '........', '........']),
+  clock: pxIcon(['..####..', '.#....#.', '#..#...#', '#..##..#', '#......#', '.#....#.', '..####..', '........']),
+  help: pxIcon(['..####..', '.#....#.', '.....#..', '....#...', '...#....', '........', '...#....', '........']),
+  skip: pxIcon(['#...#...', '##..##..', '###.###.', '########', '###.###.', '##..##..', '#...#...', '........']),
 };
+const LOGO = `<svg viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true"><rect x="7" y="1" width="2" height="1" fill="#ff5f7e"/><rect x="6" y="2" width="4" height="8" fill="#fff3dc"/><rect x="7" y="3" width="2" height="2" fill="#8fd3ff"/><rect x="5" y="7" width="1" height="4" fill="#ff5f7e"/><rect x="10" y="7" width="1" height="4" fill="#ff5f7e"/><rect x="7" y="10" width="2" height="2" fill="#ffb347"/><rect x="7" y="12" width="2" height="2" fill="#ff5f7e"/></svg>`;
 const squares = tiers => `<span class="sq" aria-label="${tiers.map(t => (t < 0 ? 'miss' : TIERS[t].name)).join(', ')}">${tiers.map(t => `<i class="${t < 0 ? 'x' : 't' + t}"></i>`).join('')}</span>`;
-const SHARE_SQ = ['⬜', '🟦', '🟩', '🟨', '🟧', '🟥'];
-function banner(msg, ms = 2600) {
+const planet = id => `<span class="planet" style="--c:${id === 'mixed' ? '#fff3dc' : genreOf(id).color}"></span>`;
+const SHARE_SQ = ['⬜', '🟥', '🟩', '🟦', '🟪', '🟨'];
+
+function banner(msg, ms = 2400) {
   const b = $('#banner'); b.textContent = msg; b.hidden = !msg;
   clearTimeout(banner.t); if (msg && ms) banner.t = setTimeout(() => (b.hidden = true), ms);
 }
 async function share(text, url) {
   try { if (navigator.share) { await navigator.share({ text, url }); return; } } catch (e) { if (e.name === 'AbortError') return; }
-  try { await navigator.clipboard.writeText(url ? `${text}\n${url}` : text); banner('Copied to clipboard'); } catch { banner('Could not copy. Long-press to select instead.'); }
+  try { await navigator.clipboard.writeText(url ? `${text}\n${url}` : text); banner('Copied!'); } catch { banner('Could not copy'); }
 }
-const fmtTime = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return [s / 3600, (s % 3600) / 60, s % 60].map(n => String(Math.floor(n)).padStart(2, '0')).join(':'); };
-let name = store.get('name', '');
-const saveName = v => { name = v.replace(/[<>]/g, '').trim().slice(0, 16); store.set('name', name); };
-
-// ---------- theme ----------
-function setGenre(id) {
-  const color = id === 'mixed' ? GENRES[0].color : genreOf(id).color;
-  document.body.style.setProperty('--field', color);
-  document.documentElement.style.setProperty('--field', color);
-  $('meta[name=theme-color]').content = color;
+const topbar = () => `<header class="top"><button class="mark" data-go="">${LOGO}ODDITY</button><div class="top-r"><button class="btn iconbtn small" id="snd" aria-label="${sfx.muted ? 'Turn sound on' : 'Turn sound off'}">${sfx.muted ? ICON.mute : ICON.sound}</button></div></header>`;
+function wire() {
+  app.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => go(b.dataset.go)));
+  $('#snd')?.addEventListener('click', e => { const m = sfx.toggle(); e.currentTarget.innerHTML = m ? ICON.mute : ICON.sound; e.currentTarget.setAttribute('aria-label', m ? 'Turn sound on' : 'Turn sound off'); });
 }
 
-// ---------- the field: crowd + your dots ----------
-const field = (() => {
-  const cv = $('#field'), ctx = cv.getContext('2d');
-  let W = 0, H = 0, dpr = 1, center = [0.5, 0.62], scale = 1;
-  const crowd = Array.from({ length: 240 }, () => {
-    const r = Math.abs(gauss()) * 0.45, a = Math.random() * Math.PI * 2;
-    return { x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0, s: 1 + Math.random() * 1.8 };
-  });
-  let dots = [], rings = 0, raf = 0;
-  function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
-  function resize() {
-    dpr = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight;
-    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    scale = Math.min(W, H * 1.1);
-  }
-  const radiusFor = t => scale * (0.13 + t * 0.068);
-  function frame(now) {
-    ctx.clearRect(0, 0, W, H);
-    const cx = W * center[0], cy = H * center[1], base = scale * 0.11;
-    ctx.strokeStyle = 'rgba(255,247,232,.13)'; ctx.lineWidth = 1;
-    for (let t = 0; t < rings; t++) { ctx.beginPath(); ctx.arc(cx, cy, radiusFor(t), 0, Math.PI * 2); ctx.stroke(); }
-    ctx.fillStyle = 'rgba(255,247,232,.34)';
-    for (const p of crowd) {
-      if (!reduced) { p.vx += (Math.random() - .5) * 0.0009 - p.x * 0.0004; p.vy += (Math.random() - .5) * 0.0009 - p.y * 0.0004; p.vx *= .96; p.vy *= .96; p.x += p.vx; p.y += p.vy; }
-      ctx.beginPath(); ctx.arc(cx + p.x * base * 2, cy + p.y * base * 2, p.s, 0, Math.PI * 2); ctx.fill();
-    }
-    for (const d of dots) {
-      const k = reduced ? 1 : Math.min(1, (now - d.born) / 1100), e = 1 - Math.pow(1 - k, 4);
-      const r = d.tier < 0 ? scale * 0.02 : radiusFor(d.tier) * e;
-      const x = cx + Math.cos(d.a) * r, y = cy + Math.sin(d.a) * r;
-      if (d.tier >= 0) {
-        ctx.strokeStyle = d.latest ? 'rgba(255,216,74,.55)' : 'rgba(255,216,74,.22)'; ctx.lineWidth = d.latest ? 2 : 1;
-        ctx.beginPath(); ctx.moveTo(cx + Math.cos(d.a) * base * .5, cy + Math.sin(d.a) * base * .5); ctx.lineTo(x, y); ctx.stroke();
-      }
-      ctx.fillStyle = d.tier < 0 ? 'rgba(255,247,232,.5)' : '#ffd84a';
-      ctx.beginPath(); ctx.arc(x, y, d.latest ? 8 : 5, 0, Math.PI * 2); ctx.fill();
-      if (d.latest && d.tier >= 0) { ctx.strokeStyle = 'rgba(255,216,74,.5)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 14 + (reduced ? 0 : Math.sin(now / 300) * 2), 0, Math.PI * 2); ctx.stroke(); }
-    }
-    raf = requestAnimationFrame(frame);
-  }
-  addEventListener('resize', resize); resize();
-  document.addEventListener('visibilitychange', () => { cancelAnimationFrame(raf); if (!document.hidden) raf = requestAnimationFrame(frame); });
-  raf = requestAnimationFrame(frame);
-  return {
-    focus(x, y, showRings) { center = [x, y]; rings = showRings ? TIERS.length : 0; },
-    clear() { dots = []; },
-    add(tier) { dots.forEach(d => (d.latest = false)); // sideways, slightly upward: lands in the open space beside the crowd, not under the prompt text
-      const side = Math.random() < 0.5 ? 0 : Math.PI;
-      dots.push({ tier, a: side + (side ? 1 : -1) * Math.random() * 0.45, born: performance.now(), latest: true }); },
-  };
-})();
-const placeField = (mode) => {
-  const wide = innerWidth >= 900;
-  if (mode === 'home') field.focus(wide ? 0.8 : 1.02, wide ? 0.42 : 0.3, false); // phones: crowd tucked half off the right edge
-  else if (mode === 'results' && wide) field.focus(0.86, 0.55, true);
-  else field.focus(0.5, wide ? 0.78 : 0.8, true);
-};
+// ---------- scene ----------
+const scene = createScene($('#sky'));
+let announce = false;
+scene.onPass = L => { if (announce && L.pts > 0) { banner(`Passed ${L.name}!`, 1800); sfx.pass(); } };
+let serverAI = false;
+fetch('/health').then(r => r.json()).then(j => (serverAI = !!j.ai)).catch(() => {}); // also wakes a sleeping server early
+
+// ---------- router (menu screens only; play screens are not in history) ----------
+const ROUTES = { '': home, unlimited, friends, archive, how };
+function go(r) { if (('#/' + r) === location.hash || (!r && !location.hash)) route(); else location.hash = '#/' + r; }
+function route() {
+  if (M.snap || M.wanted) return;
+  stopTimer(); S = null; announce = false;
+  (ROUTES[location.hash.replace(/^#\/?/, '')] || home)();
+  scrollTo(0, 0);
+}
+addEventListener('hashchange', route);
 
 // ---------- home ----------
 function home() {
-  stopTimer();
-  setGenre('general'); field.clear(); placeField('home');
-  const k = todayKey(), done = store.get('daily:' + k), streak = store.get('streak', { n: 0, last: '' });
-  const live = streak.last === k || streak.last === prevDay(k) ? streak.n : 0;
-  const prog = store.get('dailyprog:' + k);
-  app.innerHTML = `
-  <header class="top">
-    <div class="mark" aria-label="Outlier">outlier<i></i></div>
-    <div class="who"><label for="nm" class="visually-hidden">Your name</label><input id="nm" class="field-input" placeholder="Your name" maxlength="16" autocomplete="nickname" value="${esc(name)}"></div>
-  </header>
+  scene.layout('home'); scene.reset();
+  const k = todayKey(), done = store.get('daily:' + k), prog = store.get('dailyprog:' + k);
+  const streak = store.get('streak', { n: 0, last: '' }), live = streak.last === k || streak.last === prevDay(k) ? streak.n : 0;
+  app.innerHTML = `${topbar()}
   <div class="home">
-    <section class="daily" aria-labelledby="dh">
-      <div class="meta"><span>Daily <b class="num">#${dayNumber(k)}</b></span><span>${new Date(k + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</span>${live ? `<span>Streak <b class="num">${live}</b></span>` : ''}</div>
-      <h1 id="dh">Name something nobody else would.</h1>
-      <p class="lede">Seven prompts, the same for everyone today. Every right answer counts, but the rarer it is, the farther you drift from the crowd.</p>
+    <h1 class="title">ODDITY</h1>
+    <p class="tag">Name the answer nobody else would. The rarer it is, the farther your rocket flies.</p>
+    <section class="px panel" aria-label="Today's mission">
+      <div class="mission-meta"><span>Mission <b>#${missionNumber(k)}</b></span><span>${fmtDate(k)}</span>${live ? `<span>Streak <b>${live}</b></span>` : ''}</div>
       ${done ? `
-        <div class="done-score num">${sigma(done.score)}σ<small>from the crowd today</small></div>
+        <div class="reach">${esc(dist(done.score).toUpperCase())}<small>You flew past ${esc(reached(done.score).name)} today.</small></div>
         <div>${squares(done.picks.map(p => (p.ok ? p.tier : -1)))}</div>
-        <div class="actions"><button class="btn btn-primary btn-big" id="see">See results ${ICON.arrow}</button><span class="muted">Next daily in <b class="num" id="cd">${fmtTime(msToNextDay())}</b></span></div>`
-      : `<div class="actions"><button class="btn btn-primary btn-big" id="play">${prog ? 'Continue today' : 'Play today'} ${ICON.arrow}</button><span class="muted">${DAILY_COUNT} prompts · ${DAILY_SECONDS} seconds each</span></div>`}
-      <details class="how">
-        <summary>${ICON.chev} How scoring works</summary>
-        <ol>
-          <li>Type any answer that fits the prompt. If it isn't on our list, try another before the clock runs out.</li>
-          <li>Answers are graded by how many people would say them. Rarer means more points; speed earns nothing.</li>
-          <li>100 points is 1σ (one sigma) from the crowd. A perfect daily is 7σ.</li>
-          <li>In multiplayer, if two players give the same answer, both get half.</li>
-        </ol>
-        <div class="tierkey">${TIERS.map((t, i) => `<span>${squares([i])} ${t.name} <span class="muted num">${t.pts}</span></span>`).join('')}</div>
-      </details>
+        <div class="row-actions"><button class="btn primary" id="see">Mission report</button><span class="muted pixel">Next mission in <b class="num" id="cd">${fmtTime(msToNextDay())}</b></span></div>`
+      : `<p class="muted">${DAILY_COUNT} prompts, ${DAILY_SECONDS} seconds each, the same for everyone on Earth today. One flight per day.</p>
+        <div class="row-actions"><button class="btn primary big" id="launch">${ICON.up} ${prog ? 'Resume flight' : 'Launch'}</button></div>`}
     </section>
-    <section class="block" aria-labelledby="uh">
-      <h2 id="uh">Unlimited</h2>
-      <p>Pick a world and play as many rounds as you like.</p>
-      <div class="genres">
-        <button class="genre" data-g="mixed"><span class="swatch" style="background:conic-gradient(${GENRES.map(g => g.color).join(',')})"></span><span>Everything<small>${PROMPTS.length} prompts</small></span></button>
-        ${GENRES.map(g => `<button class="genre" data-g="${g.id}"><span class="swatch" style="background:${g.color}"></span><span>${esc(g.name)}<small>${PROMPTS.filter(p => p.genre === g.id).length} prompts</small></span></button>`).join('')}
-      </div>
-    </section>
-    <section class="block" aria-labelledby="mh">
-      <h2 id="mh">Play together</h2>
-      <p>Everyone gets the same prompt at the same moment. Up to 16 players, free.</p>
-      <div class="mp-row">
-        <button class="btn btn-primary" id="create">${ICON.plus} Create a room</button>
-        <button class="btn" id="quick">${ICON.bolt} Quick match</button>
-      </div>
-      <form class="join" id="joinf"><label for="code" class="visually-hidden">Room code</label><input id="code" class="field-input" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="6-digit code" value="${esc(new URLSearchParams(location.search).get('room') || '')}"><button class="btn">Join</button></form>
-      <p class="error" id="mperr" role="alert"></p>
-    </section>
+    <nav class="menu" aria-label="More ways to play">
+      <button class="btn" data-go="unlimited">${ICON.loop}<span>Unlimited<small>Any pack, any time</small></span></button>
+      <button class="btn" data-go="friends">${ICON.people}<span>Friends<small>Rooms up to 40, free</small></span></button>
+      <button class="btn" data-go="archive">${ICON.clock}<span>Archive<small>Fly past missions</small></span></button>
+      <button class="btn" data-go="how">${ICON.help}<span>How to play<small>Tiers and tips</small></span></button>
+    </nav>
   </div>
-  <p class="foot">Outlier · answer lists are hand-made, so a few real answers may be missing.</p>`;
-  $('#nm').addEventListener('input', e => saveName(e.target.value));
-  $('#play')?.addEventListener('click', startDaily);
-  $('#see')?.addEventListener('click', () => results({ mode: 'daily', date: k, ...done }));
-  app.querySelectorAll('.genre').forEach(b => b.addEventListener('click', () => startUnlimited(b.dataset.g)));
-  const needName = () => { if (!name) { saveName('Player ' + Math.floor(100 + Math.random() * 900)); $('#nm').value = name; } };
-  $('#create').addEventListener('click', () => { needName(); mpStart({ t: 'create', name, settings: { genre: 'mixed', rounds: 7, seconds: 30 } }); });
-  $('#quick').addEventListener('click', () => { needName(); mpStart({ t: 'quick', name }); });
-  $('#joinf').addEventListener('submit', e => {
-    e.preventDefault(); const code = $('#code').value.replace(/\D/g, '');
-    if (code.length !== 6) { $('#mperr').textContent = 'Room codes are 6 digits.'; return; }
-    needName(); mpStart({ t: 'join', code, name });
-  });
-  if (done) tick(() => { const el = $('#cd'); if (!el) return false; el.textContent = fmtTime(msToNextDay()); if (msToNextDay() < 1000) setTimeout(home, 1500); });
+  <p class="foot">Answer lists are hand-made, so a real but very obscure answer can be missing. Spelling slips get a “Did you mean…?”.</p>`;
+  wire();
+  $('#launch')?.addEventListener('click', () => startMission(k, 'daily'));
+  $('#see')?.addEventListener('click', () => results({ mode: 'daily', date: k, ...done }, true));
+  if (done) tick(() => { const el = $('#cd'); if (!el) return false; el.textContent = fmtTime(msToNextDay()); if (msToNextDay() < 1500) setTimeout(route, 1600); });
+  const room = new URLSearchParams(location.search).get('room');
+  if (room) { history.replaceState(null, '', '/#/friends'); friends(room); }
 }
-const prevDay = k => new Date(Date.parse(k) - 864e5).toISOString().slice(0, 10);
 let tickT = 0;
 function tick(fn) { clearInterval(tickT); tickT = setInterval(() => { if (fn() === false) clearInterval(tickT); }, 1000); }
 
+// ---------- menu pages ----------
+function page(titleText, body) {
+  scene.layout('home'); scene.reset();
+  app.innerHTML = `${topbar()}<div class="page"><div class="page-h"><button class="btn iconbtn small" data-go="" aria-label="Back">${ICON.back}</button><h1>${titleText}</h1></div>${body}</div>`;
+  wire();
+}
+function unlimited() {
+  const mode = store.get('umode', 'classic');
+  page('Unlimited', `
+    <div class="seg" role="group" aria-label="Mode">
+      <button class="btn" data-mode="classic" aria-pressed="${mode === 'classic'}">Classic<small>7 prompts, then land</small></button>
+      <button class="btn" data-mode="endless" aria-pressed="${mode === 'endless'}">Endless<small>3 fuel cells. Miss = lose one</small></button>
+    </div>
+    <section class="px panel"><h2 class="pixel">Pick a pack</h2>
+      <div class="packs">
+        <button class="btn" data-g="mixed">${planet('mixed')}<span>Everything<small>${PROMPTS.length} prompts</small></span></button>
+        ${GENRES.map(g => `<button class="btn" data-g="${g.id}">${planet(g.id)}<span>${esc(g.name)}<small>${PROMPTS.filter(p => p.genre === g.id).length} prompts</small></span></button>`).join('')}
+      </div>
+    </section>`);
+  app.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => { store.set('umode', b.dataset.mode); app.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', x === b)); }));
+  app.querySelectorAll('[data-g]').forEach(b => b.addEventListener('click', () => startUnlimited(b.dataset.g, store.get('umode', 'classic'))));
+}
+function friends(code = '') {
+  page('Play with friends', `
+    <section class="px panel">
+      <label class="lbl" for="nm">Your name</label>
+      <input id="nm" class="field" maxlength="16" autocomplete="nickname" placeholder="Pilot name" value="${esc(name)}">
+      <div class="row-actions"><button class="btn primary" id="create">Create a room</button><button class="btn" id="quick">Quick match</button></div>
+      <p class="muted">Everyone gets the same prompt at the same moment. Give the same answer as someone else and you both get half.</p>
+    </section>
+    <section class="px panel">
+      <label class="lbl" for="code">Join with a code</label>
+      <form class="join" id="joinf"><input id="code" class="field num" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="123456" value="${esc(code)}"><button class="btn primary">Join</button></form>
+      <p class="error" id="mperr" role="alert"></p>
+    </section>`);
+  $('#nm').addEventListener('input', e => saveName(e.target.value));
+  $('#create').addEventListener('click', () => mpStart({ t: 'create', name: ensureName(), settings: { genre: 'mixed', rounds: 7, seconds: 25 } }));
+  $('#quick').addEventListener('click', () => mpStart({ t: 'quick', name: ensureName() }));
+  $('#joinf').addEventListener('submit', e => {
+    e.preventDefault(); const c = $('#code').value.replace(/\D/g, '');
+    if (c.length !== 6) { $('#mperr').textContent = 'Room codes are 6 digits.'; return; }
+    mpStart({ t: 'join', code: c, name: ensureName() });
+  });
+  if (code && name) mpStart({ t: 'join', code, name });
+}
+function archive() {
+  const today = missionNumber(todayKey());
+  const rows = [];
+  for (let n = today - 1; n >= 1; n--) {
+    const k = dateOfMission(n), rec = store.get('daily:' + k);
+    rows.push(`<li><button class="btn" data-date="${k}"><span>Mission #${n} · ${fmtDate(k)}</span><span>${rec ? esc(dist(rec.score)) : 'Not flown'}</span></button></li>`);
+  }
+  page('Archive', `<p class="muted">Every past mission, the same prompts everyone got that day. Archive flights don't go on the board.</p><ul class="list">${rows.join('') || '<li class="muted">No past missions yet.</li>'}</ul>`);
+  app.querySelectorAll('[data-date]').forEach(b => b.addEventListener('click', () => { const rec = store.get('daily:' + b.dataset.date); rec ? results({ mode: 'archive', date: b.dataset.date, ...rec }, true) : startMission(b.dataset.date, 'archive'); }));
+}
+function how() {
+  page('How to play', `
+    <section class="px panel">
+      <ol class="rules">
+        <li>Each prompt has hundreds of right answers. Type one before the ${DAILY_SECONDS}-second clock runs out.</li>
+        <li>If it isn't accepted, try another. A small spelling slip gets “Did you mean…?”; press Enter or Yes to take it.</li>
+        <li>Rarer answers score more and fly your rocket farther. Speed earns nothing.</li>
+        <li>Anything still in the box when time runs out is submitted for you.</li>
+        <li>Skip the first two answers that come to mind. Everyone else thinks of them too.</li>
+      </ol>
+    </section>
+    <section class="px panel"><h2 class="pixel">The tiers</h2>
+      <div class="tiers">${TIERS.map((t, i) => `<div class="t${i}">${squares([i])}<span><b style="color:var(--tc)">${t.name}</b> <span class="muted">${t.blurb}</span></span><span>${t.pts}</span></div>`).join('')}</div>
+    </section>
+    <section class="px panel"><h2 class="pixel">Modes</h2>
+      <p><b class="pixel">Daily mission</b>: 7 prompts, the same for everyone, once a day. <b class="pixel">Unlimited</b>: Classic (7 prompts) or Endless (3 fuel cells; a miss or skip costs one, a True Oddity refills one). <b class="pixel">Friends</b>: rooms of up to 40 with a code or link, 5 to 50 prompts.</p>
+    </section>`);
+}
+
 // ---------- single player ----------
-let S = null; // current single-player session
-let timer = { raf: 0, end: 0 };
+let S = null; // current flight
+let timer = { raf: 0, end: 0, lastSec: 0 };
 function stopTimer() { cancelAnimationFrame(timer.raf); timer.end = 0; clearInterval(tickT); }
 function runTimer(endAt, onEnd) {
   stopTimer(); timer.end = endAt;
-  const bar = $('.clock i'), secs = $('.secs'), clock = $('.clock'), total = endAt - Date.now();
+  const bar = $('.timer i'), secs = $('.secs'), box = $('.timer'), span = Math.max(1, endAt - Date.now());
   const step = () => {
-    const left = timer.end - Date.now();
-    if (bar) bar.style.transform = `scaleX(${Math.max(0, left / total)})`;
-    if (secs) secs.textContent = Math.max(0, Math.ceil(left / 1000));
-    clock?.classList.toggle('low', left < 5000);
+    const left = timer.end - Date.now(), sec = Math.max(0, Math.ceil(left / 1000));
+    if (bar) bar.style.transform = `scaleX(${Math.max(0, left / span)})`;
+    if (secs) { secs.textContent = sec; secs.classList.toggle('low', left < 5000); }
+    box?.classList.toggle('low', left < 5000);
+    if (sec !== timer.lastSec) { if (sec <= 5 && sec > 0) sfx.tick(); timer.lastSec = sec; }
     if (left <= 0) { stopTimer(); onEnd(); return; }
     timer.raf = requestAnimationFrame(step);
   };
   step();
 }
 
-function startDaily() {
-  const k = todayKey();
-  if (store.get('daily:' + k)) return home();
-  const prog = store.get('dailyprog:' + k, { picks: [] });
-  S = { mode: 'daily', date: k, prompts: dailyPrompts(k), picks: prog.picks, seconds: DAILY_SECONDS };
-  field.clear(); S.picks.forEach(p => field.add(p.ok ? p.tier : -1));
+function startMission(date, mode) {
+  if (store.get('daily:' + date)) return route();
+  const prog = store.get('dailyprog:' + date, { picks: [] });
+  S = { mode, date, prompts: dailyPrompts(date), picks: prog.picks, seconds: DAILY_SECONDS };
+  begin();
+}
+function startUnlimited(genre, mode) {
+  const recent = store.get('recent', []);
+  const n = mode === 'endless' ? 1 : 7;
+  S = { mode, genre, prompts: pickPrompts(genre, n, recent), picks: [], seconds: 25, fuel: 3, recent };
+  begin();
+}
+function begin() {
+  if (location.hash !== '#/play') history.pushState(null, '', '#/play');
+  scene.layout('flight'); scene.reset(); scene.fly(total(S.picks), true);
+  sfx.launch(); announce = true;
   showPrompt();
 }
-function startUnlimited(genre) {
-  const recent = store.get('recent', []);
-  S = { mode: 'unlimited', genre, prompts: pickPrompts(genre, 7, recent), picks: [], seconds: 30 };
-  store.set('recent', [...S.prompts.map(p => p.id), ...recent].slice(0, Math.max(14, Math.floor(PROMPTS.length * 0.6))));
-  field.clear(); showPrompt();
+function remember(p) { const r = store.get('recent', []); store.set('recent', [p.id, ...r.filter(x => x !== p.id)].slice(0, Math.floor(PROMPTS.length * 0.7))); }
+
+function hud() {
+  const i = S.picks.length;
+  const where = S.mode === 'daily' ? `Mission #${missionNumber(S.date)} · ${i + 1}/${S.prompts.length}`
+    : S.mode === 'archive' ? `Archive #${missionNumber(S.date)} · ${i + 1}/${S.prompts.length}`
+    : S.mode === 'endless' ? `Endless · ${i + 1}` : `${S.genre === 'mixed' ? 'Everything' : genreOf(S.genre).name} · ${i + 1}/7`;
+  const fuel = S.mode === 'endless' ? `<span class="fuel" aria-label="${S.fuel} fuel cells left">${[0, 1, 2].map(n => `<i class="${n < S.fuel ? '' : 'empty'}"></i>`).join('')}</span>` : '';
+  return `<div class="hud"><button class="btn iconbtn small" id="quit" aria-label="Leave flight">${ICON.close}</button><span class="where">${esc(where)}</span>${fuel}<span class="alt num" id="alt">${esc(dist(total(S.picks)))}</span><span class="secs" aria-hidden="true">${S.seconds}</span></div><div class="timer" aria-hidden="true"><i></i></div>`;
 }
-const totalOf = picks => picks.reduce((s, p) => s + (p.ok ? p.points : 0), 0);
+const answerForm = () => `<form class="answer" id="af" autocomplete="off"><label for="ans" class="visually-hidden">Your answer</label><input id="ans" class="field" enterkeyhint="send" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="60" placeholder="Type your answer"><button class="btn primary" aria-label="Fire answer">Fire</button></form><div class="fb" id="fb" aria-live="polite"></div>`;
 
 function showPrompt() {
-  const i = S.picks.length, p = S.prompts[i], g = genreOf(p.genre);
-  setGenre(p.genre); placeField('play');
-  const where = S.mode === 'daily' ? `Daily <b class="num">#${dayNumber(S.date)}</b>` : `<b>${esc(S.genre === 'mixed' ? 'Everything' : genreOf(S.genre).name)}</b>`;
-  app.innerHTML = `
-  <div class="play">
-    <div class="bar"><button class="btn iconbtn" id="quit" aria-label="Back to home">${ICON.close}</button><span class="where">${where} · <span class="num">${i + 1}/${S.prompts.length}</span></span><span class="total num" aria-label="Score">${sigma(totalOf(S.picks))}σ</span><span class="secs" aria-hidden="true">${S.seconds}</span></div>
-    <div class="clock" aria-hidden="true"><i></i></div>
-    <span class="genre-tag"><span class="swatch" style="background:${g.color}"></span>${esc(g.name)}</span>
-    <h1 class="prompt">${esc(p.text)}</h1>
-    <div id="stage">
-      <form class="answer" id="af" autocomplete="off"><label for="ans" class="visually-hidden">Your answer</label><input id="ans" class="field-input" enterkeyhint="send" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="60" placeholder="Your answer"><button class="btn btn-primary" aria-label="Submit answer">${ICON.arrow}</button></form>
-      <p class="feedback" id="fb" aria-live="polite"></p>
-    </div>
-  </div>`;
-  $('#quit').addEventListener('click', () => { if (S.mode === 'daily' || confirm('Leave this round?')) home(); });
-  const input = $('#ans');
+  const p = S.prompts[S.picks.length], g = genreOf(p.genre);
+  app.innerHTML = `<div class="play">${hud()}
+    <section class="px panel" id="stage">
+      <span class="pack-tag">${planet(p.genre)}${esc(g.name)}</span>
+      <h1 class="prompt">${esc(p.text)}</h1>
+      ${answerForm()}
+      ${S.mode === 'endless' ? `<div><button class="btn ghost small" id="skip">${ICON.skip} Skip (costs fuel)</button></div>` : ''}
+    </section></div>`;
+  $('#quit').addEventListener('click', () => { if (S.mode === 'daily' || S.mode === 'archive' || confirm('Leave this flight?')) { history.back(); } });
+  $('#skip')?.addEventListener('click', () => lockIn(p, { ok: false, promptId: p.id, skipped: true }));
+  const ctl = answerBox(p, res => lockIn(p, { ...res, promptId: p.id }));
+  runTimer(Date.now() + S.seconds * 1000, async () => { const r = await ctl.final(); if (r) lockIn(p, r.ok ? { ...r, promptId: p.id } : { ok: false, promptId: p.id }); });
+}
+
+// The answer box: local bank first, then "did you mean", then the server AI if it is switched on.
+function answerBox(p, onAccept, { remote } = {}) {
+  const input = $('#ans'), form = $('#af'), fb = $('#fb');
+  let pending = null, busy = false, done = false;
   input.focus({ preventScroll: true });
-  $('#af').addEventListener('submit', e => {
-    e.preventDefault();
-    const res = judge(p, input.value);
-    if (!res.ok) {
-      const fb = $('#fb'); fb.className = 'feedback bad';
-      fb.textContent = res.reason === 'empty' ? 'Type an answer first.' : `“${input.value.trim().slice(0, 40)}” isn't on our list. Try another.`;
-      $('#af').classList.remove('shake'); void $('#af').offsetWidth; $('#af').classList.add('shake');
-      input.select(); return;
+  const say = (html, bad) => { fb.className = 'fb' + (bad ? ' bad' : ''); fb.innerHTML = html; };
+  const shake = () => { form.classList.remove('shake'); void form.offsetWidth; form.classList.add('shake'); };
+  const accept = r => { if (done) return; done = true; onAccept(r); };
+  input.addEventListener('input', () => { if (pending) { pending = null; say(''); } });
+  async function check(text, final) {
+    if (remote) return remote(text, final);
+    const r = judge(p, text);
+    if (r.ok) return r;
+    if (r.reason === 'suggest' && final) return judge(p, r.suggest);
+    if ((r.reason === 'unknown' || r.reason === 'suggest') && serverAI) {
+      try {
+        say('Checking with mission control…');
+        const res = await fetch('/api/judge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ promptId: p.id, text, final }) });
+        const a = await res.json();
+        if (a.ok) return a;
+      } catch {}
     }
-    lockIn(p, { ...res, input: input.value.trim(), promptId: p.id });
+    return r;
+  }
+  function refuse(r, text) {
+    sfx[r.reason === 'suggest' ? 'ask' : 'reject']();
+    if (r.reason === 'suggest') {
+      pending = { text, answer: r.suggest };
+      say(`<span class="ask">Did you mean <b>${esc(cap(r.suggest))}</b>?</span><button type="button" class="btn small primary" id="yes">Yes</button><button type="button" class="btn small ghost" id="no">No</button>`);
+      $('#yes').addEventListener('click', () => confirmPending());
+      $('#no').addEventListener('click', () => { pending = null; say(''); input.select(); input.focus(); });
+      return;
+    }
+    shake(); input.select();
+    say(r.reason === 'empty' ? 'Type an answer first.' : r.reason === 'multiple' ? 'One answer at a time.' : r.reason === 'busy' ? 'Mission control is busy. Try again.' : `“${esc(text.trim().slice(0, 40))}” isn't on our list. Try another.`, true);
+  }
+  async function confirmPending() {
+    const r = await check(pending.answer, false);
+    pending = null;
+    if (r.ok) accept(r); else refuse(r, input.value);
+  }
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (busy || done) return;
+    const text = input.value;
+    if (pending && text === pending.text) return confirmPending(); // Enter again = yes
+    busy = true;
+    try { const r = await check(text, false); if (r.ok) accept(r); else refuse(r, text); } finally { busy = false; }
   });
-  runTimer(Date.now() + S.seconds * 1000, () => lockIn(p, { ok: false, promptId: p.id }));
+  return {
+    // time's up: whatever is in the box is submitted, and a close spelling counts as meant
+    async final() {
+      if (done) return null;
+      const text = (pending && input.value === pending.text) ? pending.answer : input.value;
+      done = true;
+      return text.trim() ? check(text, true) : { ok: false };
+    },
+  };
 }
 
 function lockIn(p, pick) {
+  if (!S || S.picks.length >= S.prompts.length && S.mode !== 'endless') return;
   stopTimer();
   S.picks.push(pick);
-  if (S.mode === 'daily') store.set('dailyprog:' + S.date, { picks: S.picks });
-  field.add(pick.ok ? pick.tier : -1);
-  try { if (pick.ok && pick.tier >= 3) navigator.vibrate?.(40); } catch {}
-  $('.total').textContent = sigma(totalOf(S.picks)) + 'σ';
-  const last = S.picks.length === S.prompts.length;
+  if (S.mode === 'daily' || S.mode === 'archive') store.set('dailyprog:' + S.date, { picks: S.picks });
+  if (S.mode === 'classic' || S.mode === 'endless') remember(p);
+  const sum = total(S.picks);
+  scene.fly(sum);
+  if (pick.ok) { sfx.accept(pick.tier); try { if (pick.tier >= 3) navigator.vibrate?.(40); } catch {} } else sfx.reject();
+  if (S.mode === 'endless') { if (!pick.ok) S.fuel--; else if (pick.tier === 5 && S.fuel < 3) S.fuel++; }
+  const last = S.mode === 'endless' ? S.fuel <= 0 : S.picks.length === S.prompts.length;
   const more = rarer(p, pick.ok ? pick.tier : -1, 3);
+  $('#alt').textContent = dist(sum);
+  if (S.mode === 'endless') $('.fuel').innerHTML = [0, 1, 2].map(n => `<i class="${n < S.fuel ? '' : 'empty'}"></i>`).join('');
   $('#stage').innerHTML = `
-    <div class="reveal" aria-live="polite">
+    <span class="pack-tag">${planet(p.genre)}${esc(p.text)}</span>
+    <div class="reveal ${pick.ok ? 't' + pick.tier : ''}">
       ${pick.ok
-        ? `<div class="tier ${pick.tier >= 3 ? 'hot' : ''}">${TIERS[pick.tier].name}</div><p class="said">You said <b>${esc(title(pick.answer))}</b> <span class="pts num">+${pick.points}</span></p>`
-        : `<div class="tier">Time's up</div><p class="said">No answer this time. <span class="pts num">+0</span></p>`}
-      ${more.length ? `<p class="others">${pick.ok && pick.tier === 5 ? '' : 'Rarer answers out there: '}${more.map(m => `<b>${esc(title(m))}</b>`).join(', ')}</p>` : `<p class="others">Nothing on our list is rarer than that.</p>`}
-      <div class="actions"><button class="btn btn-primary btn-big" id="next">${last ? 'See results' : 'Next prompt'} ${ICON.arrow}</button></div>
+        ? `<div class="stamp">${TIERS[pick.tier].name}</div><p class="said">You said <b>${esc(cap(pick.answer))}</b> <span class="pts">+${pick.points}</span></p><p class="blurb">${TIERS[pick.tier].blurb}</p>`
+        : `<div class="stamp" style="--tc:var(--ink-3)">${pick.skipped ? 'Skipped' : 'No fuel'}</div><p class="said">${pick.skipped ? 'You skipped this one.' : 'Time ran out before an answer was accepted.'}${S.mode === 'endless' ? ' One fuel cell lost.' : ''}</p>`}
+      <p class="others">${pick.ok && pick.tier === 5 ? 'Nothing on our list is rarer than that.' : `Rarer answers out there: ${more.map(m => `<b>${esc(cap(m))}</b>`).join(', ')}`}</p>
+      <div class="row-actions"><button class="btn primary big" id="next">${last ? 'Land' : 'Next'} ${ICON.up}</button></div>
     </div>`;
-  if (pick.ok && pick.tier === 5) $('.others').textContent = 'Nothing on our list is rarer than that.';
   const next = $('#next'); next.focus({ preventScroll: true });
-  next.addEventListener('click', () => (last ? finish() : showPrompt()));
+  next.addEventListener('click', () => {
+    if (last) return finish();
+    if (S.mode === 'endless') S.prompts.push(...pickPrompts(S.genre, 1, store.get('recent', [])));
+    showPrompt();
+  });
 }
 
 function finish() {
-  const score = totalOf(S.picks);
-  const best = store.get('best', 0); if (score > best) store.set('best', score);
-  if (S.mode === 'daily') {
-    const rec = { picks: S.picks, score, submitted: false };
+  const score = total(S.picks);
+  if (S.mode === 'daily' || S.mode === 'archive') {
+    const rec = { picks: S.picks, score, submitted: S.mode === 'archive' };
     store.set('daily:' + S.date, rec);
-    const st = store.get('streak', { n: 0, last: '' });
-    store.set('streak', { n: st.last === prevDay(S.date) ? st.n + 1 : st.last === S.date ? st.n : 1, last: S.date });
-    return results({ mode: 'daily', date: S.date, ...rec });
+    if (S.mode === 'daily') {
+      const st = store.get('streak', { n: 0, last: '' });
+      store.set('streak', { n: st.last === prevDay(S.date) ? st.n + 1 : st.last === S.date ? st.n : 1, last: S.date });
+    }
+    return results({ mode: S.mode, date: S.date, ...rec });
   }
-  results({ mode: 'unlimited', genre: S.genre, picks: S.picks, score });
+  results({ mode: S.mode, genre: S.genre, picks: S.picks, score });
 }
 
 // ---------- results ----------
-function results(r) {
-  stopTimer();
-  setGenre(r.mode === 'daily' ? 'general' : r.genre); placeField('results');
-  field.clear(); r.picks.forEach(p => field.add(p.ok ? p.tier : -1));
+function results(r, replay) {
+  stopTimer(); announce = false;
+  scene.layout('results');
+  if (replay) { scene.reset(); setTimeout(() => scene.fly(r.score), 250); } else scene.fly(r.score);
   const tiers = r.picks.map(p => (p.ok ? p.tier : -1));
-  const label = r.mode === 'daily' ? `Outlier daily #${dayNumber(r.date)}` : `Outlier · ${r.genre === 'mixed' ? 'Everything' : genreOf(r.genre).name}`;
+  const label = r.mode === 'daily' ? `Mission #${missionNumber(r.date)}` : r.mode === 'archive' ? `Archive mission #${missionNumber(r.date)}`
+    : r.mode === 'endless' ? `Endless · ${r.genre === 'mixed' ? 'Everything' : genreOf(r.genre).name}` : r.genre === 'mixed' ? 'Everything' : genreOf(r.genre).name;
+  const L = reached(r.score);
+  S = null;
   app.innerHTML = `
   <div class="results">
-    <div class="bar"><button class="btn iconbtn" id="back" aria-label="Back to home">${ICON.back}</button><span class="where">${esc(label)}</span></div>
-    <div class="big num">${sigma(r.score)}σ<small>from the crowd · ${r.score} points · ${squares(tiers)}</small></div>
-    <div class="actions-row">
-      <button class="btn btn-primary" id="share">${ICON.share} Share</button>
-      ${r.mode === 'unlimited' ? `<button class="btn" id="again">Play again ${ICON.arrow}</button>` : ''}
-      <button class="btn btn-ghost" id="home">Home</button>
-    </div>
-    <section class="rows" aria-label="Your answers">
-      ${r.picks.map(pk => { const p = promptById(pk.promptId); return `<div class="row"><span class="q">${esc(p.text)}</span><span class="p num">${pk.ok ? '+' + pk.points : '0'}<small>${pk.ok ? TIERS[pk.tier].name : 'Missed'}</small></span><span class="a ${pk.ok ? '' : 'miss'}">${pk.ok ? esc(title(pk.answer)) : 'No answer'}</span></div>`; }).join('')}
+    <div class="hud"><button class="btn iconbtn small" id="home" aria-label="Back to home">${ICON.back}</button><span class="where">${esc(label)} · report</span></div>
+    <section class="px panel">
+      <div class="headline">${esc(L.pts ? L.name.replace(/^the /, '') : 'The pad')}</div>
+      <p class="pixel" style="font-size:1.2rem">${L.pts ? `${esc(dist(r.score))} from Earth, past ${esc(L.name)}.` : 'Still on the launch pad.'} <span class="muted">${r.score} points</span></p>
+      <div>${squares(tiers)}</div>
+      <div class="row-actions">
+        <button class="btn primary" id="share">${ICON.share} Share</button>
+        ${r.mode === 'classic' || r.mode === 'endless' ? `<button class="btn" id="again">Fly again</button>` : ''}
+        <button class="btn ghost" id="home2">Home</button>
+      </div>
     </section>
-    ${r.mode === 'daily' ? `<section class="block" id="world"><h2>Today's board</h2><p class="muted" id="wmsg">Sending your dive…</p></section>` : ''}
+    <section class="px panel rows" aria-label="Your answers">
+      ${r.picks.map(pk => { const p = promptById(pk.promptId); return `<div class="row ${pk.ok ? 't' + pk.tier : ''}"><span class="q">${esc(p?.text || '')}</span><span class="p">${pk.ok ? '+' + pk.points : '0'}<small>${pk.ok ? TIERS[pk.tier].name : pk.skipped ? 'Skipped' : 'Missed'}</small></span><span class="a ${pk.ok ? '' : 'miss'}">${pk.ok ? esc(cap(pk.answer)) : '—'}</span></div>`; }).join('')}
+    </section>
+    ${r.mode === 'daily' ? `<section class="px panel" id="world"><h2 class="pixel">Today's board</h2><p class="muted" id="wmsg">Sending your flight log…</p></section>` : ''}
   </div>`;
-  $('#back').addEventListener('click', home); $('#home').addEventListener('click', home);
-  $('#again')?.addEventListener('click', () => startUnlimited(r.genre));
-  $('#share').addEventListener('click', () => share(`${label} — ${sigma(r.score)}σ from the crowd\n${tiers.map(t => (t < 0 ? '⬛' : SHARE_SQ[t])).join('')}`, location.origin));
+  const back = () => (location.hash === '#/play' ? history.back() : go(''));
+  $('#home').addEventListener('click', back); $('#home2').addEventListener('click', back);
+  $('#again')?.addEventListener('click', () => startUnlimited(r.genre, r.mode));
+  $('#share').addEventListener('click', () => share(`ODDITY · ${label}\n${dist(r.score)}${L.pts ? `, past ${L.name}` : ''}\n${tiers.map(t => (t < 0 ? '⬛' : SHARE_SQ[t])).join('')}`, location.origin));
   if (r.mode === 'daily') loadBoard(r);
 }
-
 async function loadBoard(r, attempt = 0) {
   const msg = $('#wmsg'); if (!msg) return;
   try {
     let data;
     if (!r.submitted) {
-      const res = await fetch('/api/daily', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date: r.date, clientId, name: name || 'Anonymous', answers: r.picks.map(p => (p.ok ? p.answer : '')) }) });
+      const res = await fetch('/api/daily', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date: r.date, clientId, name: name || 'Anonymous pilot', answers: r.picks.map(p => (p.ok ? p.answer : '')) }) });
       data = await res.json();
-      if (!res.ok) { msg.textContent = data.error || 'The board could not take your dive.'; return; }
+      if (!res.ok) { msg.textContent = data.error || 'The board could not take your flight.'; return; }
       r.submitted = true; store.set('daily:' + r.date, { picks: r.picks, score: r.score, submitted: true });
     } else {
       const res = await fetch(`/api/daily/stats?clientId=${encodeURIComponent(clientId)}`);
       data = await res.json();
-      if (!res.ok) { msg.textContent = r.date === todayKey() ? data.error : 'That daily has ended.'; return; }
+      if (!res.ok) { msg.textContent = r.date === todayKey() ? data.error : 'That mission has ended.'; return; }
     }
     renderBoard(r, data);
   } catch {
     if (attempt < 12) { msg.textContent = 'Waking the server, this can take up to a minute…'; setTimeout(() => loadBoard(r, attempt + 1), 5000); }
-    else msg.textContent = 'Could not reach the server. Your score is saved on this device.';
+    else msg.textContent = 'Could not reach the server. Your flight is saved on this device.';
   }
 }
 function renderBoard(r, d) {
   const prompts = dailyPrompts(r.date), w = $('#world'); if (!w) return;
   w.innerHTML = `
-    <h2>Today's board</h2>
-    <p class="muted">You're <b class="num">#${d.rank}</b> of <b class="num">${d.players}</b> ${d.players === 1 ? 'player' : 'players'} today.</p>
-    <ol class="board">${d.top.map((e, i) => `<li class="${e.you ? 'me' : ''}"><span class="r num">${i + 1}</span><span class="n">${esc(e.name)}</span>${squares(e.tiers)}<span class="s num">${sigma(e.score)}σ</span></li>`).join('')}</ol>
-    <h2 style="margin-top:20px">What everyone said</h2>
+    <h2 class="pixel">Today's board</h2>
+    <p class="muted">You're <b class="num">#${d.rank}</b> of <b class="num">${d.players}</b> ${d.players === 1 ? 'pilot' : 'pilots'} today.${name ? '' : ' Set your name in Friends to show it here.'}</p>
+    <ol class="board">${d.top.map((e, i) => `<li class="${e.you ? 'me' : ''}"><span class="r">${i + 1}</span><span class="n">${esc(e.name)}</span><span class="s">${esc(dist(e.score))}</span><span></span>${squares(e.tiers)}</li>`).join('')}</ol>
+    <h2 class="pixel" style="margin-top:8px">What everyone said</h2>
     ${d.stats.map((s, i) => `<div class="stat"><span class="q">${esc(prompts[i].text)}</span><div class="bars">
-      ${s.top.map(a => `<div class="${s.yours?.answer === a.answer ? 'me' : ''}"><span>${esc(title(a.answer))}</span><em style="width:${Math.max(2, (a.count / s.total) * 100)}%"></em><span>${Math.round((a.count / s.total) * 100)}%</span></div>`).join('')}
-      ${s.yours && !s.top.some(a => a.answer === s.yours.answer) ? `<div class="me"><span>${esc(title(s.yours.answer))}</span><em style="width:${Math.max(2, (s.yours.count / s.total) * 100)}%"></em><span>${Math.round((s.yours.count / s.total) * 100)}%</span></div>` : ''}
+      ${s.top.map(a => `<div class="${s.yours?.answer === a.answer ? 'me' : ''}"><span>${esc(cap(a.answer))}</span><em style="width:${Math.max(2, (a.count / s.total) * 100)}%"></em><span>${Math.round((a.count / s.total) * 100)}%</span></div>`).join('')}
+      ${s.yours && !s.top.some(a => a.answer === s.yours.answer) ? `<div class="me"><span>${esc(cap(s.yours.answer))}</span><em style="width:${Math.max(2, (s.yours.count / s.total) * 100)}%"></em><span>${Math.round((s.yours.count / s.total) * 100)}%</span></div>` : ''}
     </div></div>`).join('')}`;
 }
 
 // ---------- multiplayer ----------
-const M = { ws: null, snap: null, key: '', seat: JSON.parse(sessionStorage.getItem('outlier:seat') || 'null'), first: null, retries: 0, offset: 0, wanted: false };
+const M = { ws: null, snap: null, key: '', seat: JSON.parse(sessionStorage.getItem('oddity:seat') || 'null'), first: null, retries: 0, offset: 0, wanted: false, judge: null };
 function mpStart(firstMsg) { M.first = firstMsg; M.wanted = true; M.retries = 0; banner('Connecting…', 0); mpConnect(); }
 function mpConnect() {
   try { M.ws?.close(); } catch {}
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   M.ws = ws;
-  const slow = setTimeout(() => banner('Waking the server, this can take up to a minute…', 0), 3000);
-  ws.onopen = () => {
-    clearTimeout(slow); banner(''); M.retries = 0;
-    ws.send(JSON.stringify(M.seat ? { t: 'rejoin', ...M.seat } : M.first));
-  };
+  const slow = setTimeout(() => banner('Waking the server, up to a minute…', 0), 3000);
+  ws.onopen = () => { clearTimeout(slow); banner(''); M.retries = 0; ws.send(JSON.stringify(M.seat ? { t: 'rejoin', ...M.seat } : M.first)); };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
-    if (m.t === 'joined') { M.seat = { code: m.code, token: m.token }; sessionStorage.setItem('outlier:seat', JSON.stringify(M.seat)); history.replaceState(null, '', '/?room=' + m.code); }
-    else if (m.t === 'gone') { M.seat = null; sessionStorage.removeItem('outlier:seat'); if (M.first && M.first.t !== 'rejoin') ws.send(JSON.stringify(M.first)); else { mpQuit('That room has closed.'); } }
-    else if (m.t === 'error') { mpQuit(); const el = $('#mperr'); if (el) el.textContent = m.msg; }
-    else if (m.t === 'rejected') { const fb = $('#fb'); if (fb) { fb.className = 'feedback bad'; fb.textContent = m.reason === 'empty' ? 'Type an answer first.' : `“${m.text.trim().slice(0, 40)}” isn't on our list. Try another.`; const f = $('#af'); f?.classList.remove('shake'); void f?.offsetWidth; f?.classList.add('shake'); $('#ans')?.select(); } }
+    if (m.t === 'joined') { M.seat = { code: m.code, token: m.token }; sessionStorage.setItem('oddity:seat', JSON.stringify(M.seat)); history.replaceState(null, '', '/?room=' + m.code + '#/room'); }
+    else if (m.t === 'gone') { M.seat = null; sessionStorage.removeItem('oddity:seat'); if (M.first) ws.send(JSON.stringify(M.first)); else mpQuit('That room has closed.'); }
+    else if (m.t === 'error') { const msg = m.msg; mpQuit(); go('friends'); setTimeout(() => { const el = $('#mperr'); if (el) el.textContent = msg; }, 0); }
+    else if (m.t === 'rejected') M.judge?.(m);
     else if (m.t === 'room') { M.offset = m.now - Date.now(); M.snap = m; renderMp(); }
   };
   ws.onclose = ev => {
@@ -369,148 +452,131 @@ function mpConnect() {
 function mpSend(m) { if (M.ws?.readyState === 1) M.ws.send(JSON.stringify(m)); }
 function mpQuit(msg) {
   M.wanted = false; mpSend({ t: 'leave' }); try { M.ws?.close(); } catch {}
-  M.ws = null; M.seat = null; M.snap = null; M.key = ''; sessionStorage.removeItem('outlier:seat');
-  history.replaceState(null, '', '/'); banner(msg || ''); home();
+  M.ws = null; M.seat = null; M.snap = null; M.key = ''; M.first = null; sessionStorage.removeItem('oddity:seat');
+  history.replaceState(null, '', '/#/'); banner(msg || ''); route();
 }
 const serverNow = () => Date.now() + M.offset;
 const me = s => s.players.find(p => p.id === s.you);
 const inviteUrl = s => `${location.origin}/?room=${s.code}`;
-
 function renderMp() {
   const s = M.snap; if (!s) return;
-  const key = s.phase + ':' + s.round;
-  const fresh = key !== M.key; M.key = key;
+  const key = s.phase + ':' + s.round, fresh = key !== M.key; M.key = key;
   if (s.phase === 'lobby') return lobby(s, fresh);
   if (s.phase === 'prompt') return mpPrompt(s, fresh);
   if (s.phase === 'reveal') return mpReveal(s, fresh);
   if (s.phase === 'final') return mpFinal(s, fresh);
 }
-function peopleList(s) {
-  return s.players.map(p => `<li class="${p.online ? '' : 'off'}"><span>${esc(p.name)}${p.id === s.you ? ' <span class="tag">(you)</span>' : ''}</span><span class="tag">${p.id === s.hostId ? 'Host' : p.online ? '' : 'Away'}</span></li>`).join('');
+const setSummary = s => `${s.settings.genre === 'mixed' ? 'Everything' : genreOf(s.settings.genre).name} · ${s.settings.rounds} prompts · ${s.settings.seconds} s each`;
+function lobbyStatus(s, host) {
+  const n = s.players.filter(p => p.online).length;
+  if (s.autoStartAt) return `Launching in ${Math.max(0, Math.ceil((s.autoStartAt - serverNow()) / 1000))}s… ${n} pilots aboard.`;
+  if (s.public) return n < 2 ? 'Waiting for another pilot to join…' : `${n} pilots aboard.`;
+  return host ? (n < 2 ? 'Share the code, or start solo to try it.' : `${n} pilots aboard. Launch when everyone's in.`) : 'Waiting for the host to launch…';
 }
+const people = s => s.players.map(p => `<li class="${p.online ? '' : 'off'}"><span>${esc(p.name)}${p.id === s.you ? ' <span class="tag">(you)</span>' : ''}</span><span class="tag">${p.id === s.hostId ? 'Host' : p.online ? '' : 'Away'}</span></li>`).join('');
 function lobby(s, fresh) {
-  stopTimer(); setGenre(s.settings.genre === 'mixed' ? 'general' : s.settings.genre); placeField('home'); field.clear();
+  stopTimer(); announce = false; scene.layout('home'); scene.reset();
   const host = s.hostId === s.you;
-  const auto = s.autoStartAt ? Math.max(0, Math.ceil((s.autoStartAt - serverNow()) / 1000)) : 0;
   if (!fresh && $('.lobby')) {
-    $('#people').innerHTML = peopleList(s);
-    $('#lstatus').textContent = lobbyStatus(s, host, auto);
+    $('#people').innerHTML = people(s); $('#lstatus').textContent = lobbyStatus(s, host);
     if (host) for (const k of ['genre', 'rounds', 'seconds']) { const el = $('#s-' + k); if (el && document.activeElement !== el) el.value = s.settings[k]; }
     else $('#sumset').textContent = setSummary(s);
-    $('#start') && ($('#start').disabled = !s.players.some(p => p.online));
     return;
   }
-  app.innerHTML = `
-  <div class="bar" style="margin-bottom:28px"><button class="btn iconbtn" id="leave" aria-label="Leave room">${ICON.close}</button><span class="where">${s.public ? 'Quick match' : 'Private room'}</span></div>
+  const opt = (arr, v) => arr.map(n => `<option ${n == v ? 'selected' : ''}>${n}</option>`).join('');
+  app.innerHTML = `${topbar()}
   <div class="lobby">
-    <section class="code-wrap">
-      <span class="muted">Room code</span>
-      <div class="code num" aria-label="Room code ${s.code.split('').join(' ')}">${s.code}</div>
-      <div class="actions-row"><button class="btn btn-primary" id="invite">${ICON.share} Invite friends</button><button class="btn" id="copy">${ICON.copy} Copy link</button></div>
-      <p class="muted" id="lstatus" aria-live="polite">${lobbyStatus(s, host, auto)}</p>
-      ${host ? `<button class="btn btn-primary btn-big" id="start">Start game ${ICON.arrow}</button>` : ''}
+    <section class="px panel">
+      <div class="page-h"><button class="btn iconbtn small" id="leave" aria-label="Leave room">${ICON.close}</button><span class="pixel muted">${s.public ? 'QUICK MATCH' : 'PRIVATE ROOM'} · CODE</span></div>
+      <div class="code" aria-label="Room code ${s.code.split('').join(' ')}">${s.code}</div>
+      <div class="row-actions"><button class="btn primary" id="invite">${ICON.share} Invite</button><button class="btn" id="copy">${ICON.copy} Copy link</button></div>
+      <p class="muted" id="lstatus" aria-live="polite">${lobbyStatus(s, host)}</p>
+      ${host ? `<button class="btn primary big" id="start">${ICON.up} Launch game</button>` : ''}
     </section>
-    <section class="block">
-      <h2>${ICON.people} Players</h2>
-      <ul class="people" id="people">${peopleList(s)}</ul>
-      <h2 style="margin-top:12px">Game</h2>
+    <section class="px panel">
+      <h2 class="pixel">Pilots</h2>
+      <ul class="people" id="people">${people(s)}</ul>
+      <h2 class="pixel">Game</h2>
       ${host ? `<div class="settings">
-        <div class="wide"><label class="lbl" for="s-genre">Genre</label><select id="s-genre" class="field-input"><option value="mixed">Everything</option>${GENRES.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></div>
-        <div><label class="lbl" for="s-rounds">Prompts</label><select id="s-rounds" class="field-input">${[3, 5, 7, 10, 15].map(n => `<option>${n}</option>`).join('')}</select></div>
-        <div><label class="lbl" for="s-seconds">Seconds each</label><select id="s-seconds" class="field-input">${[15, 20, 30, 45, 60].map(n => `<option>${n}</option>`).join('')}</select></div>
+        <div class="wide"><label class="lbl" for="s-genre">Pack</label><select id="s-genre" class="field"><option value="mixed">Everything</option>${GENRES.map(g => `<option value="${g.id}" ${g.id === s.settings.genre ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
+        <div><label class="lbl" for="s-rounds">Prompts</label><select id="s-rounds" class="field">${opt([5, 7, 10, 15, 20, 30, 50], s.settings.rounds)}</select></div>
+        <div><label class="lbl" for="s-seconds">Seconds</label><select id="s-seconds" class="field">${opt([5, 10, 15, 20, 25, 30, 45, 60], s.settings.seconds)}</select></div>
       </div>` : `<p class="muted" id="sumset">${setSummary(s)}</p>`}
     </section>
   </div>`;
+  wire();
   $('#leave').addEventListener('click', () => mpQuit());
-  $('#invite').addEventListener('click', () => share(`Join my Outlier room: ${s.code}`, inviteUrl(s)));
+  $('#invite').addEventListener('click', () => share(`Join my ODDITY room: ${s.code}`, inviteUrl(s)));
   $('#copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(inviteUrl(s)); banner('Invite link copied'); } catch { banner(inviteUrl(s), 6000); } });
   if (host) {
-    for (const k of ['genre', 'rounds', 'seconds']) { const el = $('#s-' + k); el.value = s.settings[k]; el.addEventListener('change', () => mpSend({ t: 'settings', settings: { [k]: el.value } })); }
+    for (const k of ['genre', 'rounds', 'seconds']) $('#s-' + k).addEventListener('change', e => mpSend({ t: 'settings', settings: { [k]: e.target.value } }));
     $('#start').addEventListener('click', () => mpSend({ t: 'start' }));
   }
-  if (s.autoStartAt) tick(() => { if (!$('.lobby') || !M.snap || M.snap.phase !== 'lobby') return false; const a = Math.max(0, Math.ceil((M.snap.autoStartAt - serverNow()) / 1000)); $('#lstatus').textContent = lobbyStatus(M.snap, M.snap.hostId === M.snap.you, a); });
+  if (s.autoStartAt) tick(() => { if (!$('.lobby') || M.snap?.phase !== 'lobby') return false; $('#lstatus').textContent = lobbyStatus(M.snap, M.snap.hostId === M.snap.you); });
 }
-const setSummary = s => `${s.settings.genre === 'mixed' ? 'Everything' : genreOf(s.settings.genre).name} · ${s.settings.rounds} prompts · ${s.settings.seconds} seconds each`;
-function lobbyStatus(s, host, auto) {
-  const n = s.players.filter(p => p.online).length;
-  if (s.autoStartAt) return `Starting in ${auto}s… ${n} players in.`;
-  if (s.public) return n < 2 ? 'Waiting for another player to join…' : `${n} players in.`;
-  return host ? (n < 2 ? 'Share the code, or start solo to try it out.' : `${n} players in. Start when everyone's here.`) : 'Waiting for the host to start…';
+const strip = s => s.players.filter(p => p.online || p.answered).map(p => `<span class="chip ${p.answered ? 'ok' : ''} ${p.online ? '' : 'off'}"><span class="dot"></span>${esc(p.name)}</span>`).join('');
+function mpHud(s, mine) {
+  return `<div class="hud"><button class="btn iconbtn small" id="leave" aria-label="Leave room">${ICON.close}</button><span class="where">Room ${s.code} · ${s.round + 1}/${s.rounds}</span><span class="alt num">${esc(dist(mine.score))}</span><span class="secs" aria-hidden="true"></span></div><div class="timer" aria-hidden="true"><i></i></div>`;
 }
-function strip(s) {
-  return s.players.filter(p => p.online || p.answered).map(p => `<span class="chip ${p.answered ? 'ok' : ''} ${p.online ? '' : 'off'}"><span class="dot"></span>${esc(p.name)}</span>`).join('');
+function mpLocked(a) {
+  $('#stage').innerHTML = `<div class="reveal t${a.tier}"><div class="stamp">${TIERS[a.tier].name}</div><p class="said">Locked in <b>${esc(cap(a.answer))}</b> <span class="pts">+${a.points}</span></p><p class="others">Waiting for the others. Same answer as another pilot? You both get half.</p></div>`;
 }
 function mpPrompt(s, fresh) {
-  const p = promptById(s.prompt.id), g = genreOf(p.genre), mine = me(s);
-  if (!fresh && $('#mpplay')) {
-    $('#strip').innerHTML = strip(s);
-    if (mine.answer && !$('.reveal')) lockedView(mine.answer, s);
-    return;
-  }
-  setGenre(p.genre); placeField('play');
-  if (s.round === 0) { field.clear(); }
-  app.innerHTML = `
-  <div class="play" id="mpplay">
-    <div class="bar"><button class="btn iconbtn" id="leave" aria-label="Leave room">${ICON.close}</button><span class="where">Room <b class="num">${s.code}</b> · <span class="num">${s.round + 1}/${s.rounds}</span></span><span class="total num">${sigma(mine.score)}σ</span><span class="secs" aria-hidden="true"></span></div>
-    <div class="clock" aria-hidden="true"><i></i></div>
-    <span class="genre-tag"><span class="swatch" style="background:${g.color}"></span>${esc(g.name)}</span>
-    <h1 class="prompt">${esc(p.text)}</h1>
-    <div id="stage">
-      <form class="answer" id="af" autocomplete="off"><label for="ans" class="visually-hidden">Your answer</label><input id="ans" class="field-input" enterkeyhint="send" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="60" placeholder="Your answer"><button class="btn btn-primary" aria-label="Submit answer">${ICON.arrow}</button></form>
-      <p class="feedback" id="fb" aria-live="polite"></p>
-    </div>
-    <div class="strip" id="strip" aria-label="Who has answered">${strip(s)}</div>
-  </div>`;
+  const p = promptById(s.prompt.id), mine = me(s);
+  if (!fresh && $('#mpplay')) { $('#strip').innerHTML = strip(s); if (mine.answer && !$('.reveal')) { mpLocked(mine.answer); sfx.accept(mine.answer.tier); scene.fly(mine.score + mine.answer.points); } return; }
+  announce = true; scene.layout('flight');
+  if (s.round === 0) { scene.reset(); }
+  scene.fly(mine.score, s.round === 0);
+  app.innerHTML = `<div class="play" id="mpplay">${mpHud(s, mine)}
+    <section class="px panel" id="stage"><span class="pack-tag">${planet(p.genre)}${esc(genreOf(p.genre).name)}</span><h1 class="prompt">${esc(p.text)}</h1>${answerForm()}</section>
+    <div class="strip" id="strip" aria-label="Who has answered">${strip(s)}</div></div>`;
   $('#leave').addEventListener('click', () => { if (confirm('Leave this game?')) mpQuit(); });
-  $('#af').addEventListener('submit', e => { e.preventDefault(); const v = $('#ans').value; if (!v.trim()) { $('#fb').className = 'feedback bad'; $('#fb').textContent = 'Type an answer first.'; return; } mpSend({ t: 'answer', text: v }); });
-  if (mine.answer) lockedView(mine.answer, s); else $('#ans').focus({ preventScroll: true });
-  runTimer(s.endsAt - M.offset, () => { const fb = $('#fb'); if (fb && !me(M.snap).answer) { fb.className = 'feedback'; fb.textContent = "Time's up."; } });
-}
-function lockedView(a, s) {
-  $('#stage').innerHTML = `<div class="reveal"><div class="tier ${a.tier >= 3 ? 'hot' : ''}">${TIERS[a.tier].name}</div><p class="said">Locked in <b>${esc(title(a.answer))}</b> <span class="pts num">+${a.points}</span></p><p class="others">Waiting for the others. Same answer as someone else? You both get half.</p></div>`;
+  if (mine.answer) return mpLocked(mine.answer);
+  // remote judge: the server rules; the answer box shows its replies
+  let waiting = null;
+  M.judge = m => { waiting?.(m); waiting = null; };
+  const ctl = answerBox(p, () => {}, {
+    remote: (text, final) => new Promise(res => {
+      waiting = m => res({ ok: false, reason: m.reason, suggest: m.suggest });
+      mpSend({ t: 'answer', text, final });
+      if (final) res({ ok: true }); // the server takes it from here
+    }),
+  });
+  runTimer(s.endsAt - M.offset, () => { ctl.final(); });
 }
 function mpReveal(s, fresh) {
-  const mine = me(s);
-  if (fresh) field.add(mine.answer ? mine.answer.tier : -1);
-  const p = promptById(s.prompt.id);
+  const mine = me(s), p = promptById(s.prompt.id), host = s.hostId === s.you;
+  if (fresh) scene.fly(mine.score);
   const ranked = [...s.players].filter(x => x.online || x.answer).sort((a, b) => (b.answer?.gained ?? -1) - (a.answer?.gained ?? -1));
-  const host = s.hostId === s.you;
-  app.innerHTML = `
-  <div class="play">
-    <div class="bar"><button class="btn iconbtn" id="leave" aria-label="Leave room">${ICON.close}</button><span class="where">Room <b class="num">${s.code}</b> · <span class="num">${s.round + 1}/${s.rounds}</span></span><span class="total num">${sigma(mine.score)}σ</span><span class="secs" aria-hidden="true"></span></div>
-    <div class="clock" aria-hidden="true"><i></i></div>
-    <h1 class="prompt" style="font-size:clamp(1.4rem,4vw,2rem)">${esc(p.text)}</h1>
-    <ul class="answers">${ranked.map(x => `<li class="${x.id === s.you ? 'me' : ''} ${x.answer?.shared ? 'shared' : ''}"><span class="n">${esc(x.name)}</span><span class="p num">${x.answer ? '+' + x.answer.gained : '0'}<small>${x.answer ? (x.answer.shared ? 'Shared · half' : TIERS[x.answer.tier].name) : 'No answer'}</small></span><span class="a">${x.answer ? esc(title(x.answer.answer)) : '—'}</span></li>`).join('')}</ul>
-    <p class="others muted">Rarest on our list: ${rarer(p, 4, 3).map(m => `<b>${esc(title(m))}</b>`).join(', ')}</p>
-    ${host ? `<div class="actions-row"><button class="btn btn-primary btn-big" id="next">${s.round + 1 >= s.rounds ? 'Final scores' : 'Next prompt'} ${ICON.arrow}</button></div>` : `<p class="muted">Next prompt in a few seconds…</p>`}
-  </div>`;
+  app.innerHTML = `<div class="play">${mpHud(s, mine)}
+    <section class="px panel">
+      <span class="pack-tag">${planet(p.genre)}${esc(p.text)}</span>
+      <ul class="answers">${ranked.map(x => `<li class="${x.id === s.you ? 'me' : ''} ${x.answer ? 't' + x.answer.tier : ''}"><span class="n">${esc(x.name)}</span><span class="p">${x.answer ? '+' + x.answer.gained : '0'}<small>${x.answer ? (x.answer.shared ? 'Copycat · half' : TIERS[x.answer.tier].name) : 'No answer'}</small></span><span class="a">${x.answer ? esc(cap(x.answer.answer)) : '—'}</span></li>`).join('')}</ul>
+      <p class="others">Rarest on our list: ${rarer(p, 4, 3).map(m => `<b>${esc(cap(m))}</b>`).join(', ')}</p>
+      ${host ? `<div class="row-actions"><button class="btn primary big" id="next">${s.round + 1 >= s.rounds ? 'Final scores' : 'Next'} ${ICON.up}</button></div>` : '<p class="muted">Next prompt in a few seconds…</p>'}
+    </section></div>`;
   $('#leave').addEventListener('click', () => { if (confirm('Leave this game?')) mpQuit(); });
   $('#next')?.addEventListener('click', () => mpSend({ t: 'next' }));
   $('#next')?.focus({ preventScroll: true });
   runTimer(s.endsAt - M.offset, () => {});
 }
-function mpFinal(s, fresh) {
-  stopTimer(); setGenre('general'); placeField('results');
-  const ranked = [...s.players].sort((a, b) => b.score - a.score);
-  const host = s.hostId === s.you, mine = me(s), place = ranked.findIndex(p => p.id === s.you) + 1;
-  app.innerHTML = `
-  <div class="results">
-    <div class="bar"><button class="btn iconbtn" id="leave" aria-label="Leave room">${ICON.close}</button><span class="where">Room <b class="num">${s.code}</b> · final</span></div>
-    <div class="big num">${place === 1 ? 'You win' : '#' + place}<small>${sigma(mine.score)}σ from the crowd · ${mine.score} points</small></div>
-    <ol class="board podium">${ranked.map((p, i) => `<li class="${p.id === s.you ? 'me' : ''}"><span class="r num">${i + 1}</span><span class="n">${esc(p.name)}</span>${squares((p.history || []).map(t => (t == null ? -1 : t)))}<span class="s num">${sigma(p.score)}σ</span></li>`).join('')}</ol>
-    <div class="actions-row">
-      ${host ? `<button class="btn btn-primary btn-big" id="again">Play again ${ICON.arrow}</button>` : '<p class="muted">Waiting for the host to start another game…</p>'}
-      <button class="btn btn-ghost" id="out">Leave room</button>
-    </div>
-  </div>`;
-  $('#leave').addEventListener('click', () => mpQuit());
-  $('#out').addEventListener('click', () => mpQuit());
+function mpFinal(s) {
+  stopTimer(); announce = false;
+  const ranked = [...s.players].sort((a, b) => b.score - a.score), host = s.hostId === s.you, mine = me(s), place = ranked.findIndex(p => p.id === s.you) + 1;
+  scene.layout('results'); scene.fly(mine.score);
+  app.innerHTML = `<div class="results">
+    <div class="hud"><button class="btn iconbtn small" id="leave" aria-label="Leave room">${ICON.close}</button><span class="where">Room ${s.code} · final</span></div>
+    <section class="px panel">
+      <div class="headline">${place === 1 ? 'You win!' : '#' + place}</div>
+      <p class="pixel" style="font-size:1.2rem">${esc(dist(mine.score))}, past ${esc(reached(mine.score).name)} <span class="muted">${mine.score} points</span></p>
+      <ol class="board">${ranked.map((p, i) => `<li class="${p.id === s.you ? 'me' : ''}"><span class="r">${i + 1}</span><span class="n">${esc(p.name)}</span><span class="s">${p.score} pts</span><span></span>${squares((p.history || []).map(t => (t == null ? -1 : t)))}</li>`).join('')}</ol>
+      <div class="row-actions">${host ? `<button class="btn primary big" id="again">Play again</button>` : '<p class="muted">Waiting for the host to start another game…</p>'}<button class="btn ghost" id="out">Leave room</button></div>
+    </section></div>`;
+  $('#leave').addEventListener('click', () => mpQuit()); $('#out').addEventListener('click', () => mpQuit());
   $('#again')?.addEventListener('click', () => mpSend({ t: 'again' }));
 }
 
 // ---------- boot ----------
-fetch('/health').catch(() => {}); // start waking a sleeping server early
 if (M.seat) { M.wanted = true; mpConnect(); banner('Rejoining your room…', 0); app.innerHTML = '<p class="boot">Rejoining…</p>'; }
-else home();
-const urlRoom = new URLSearchParams(location.search).get('room');
-if (urlRoom && !M.seat && name) mpStart({ t: 'join', code: urlRoom, name });
+else if (location.hash === '#/play' || location.hash === '#/room') { history.replaceState(null, '', '/#/'); route(); }
+else route();

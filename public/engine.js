@@ -3,16 +3,61 @@ import { PROMPTS, GENRES } from './banks.js';
 export { PROMPTS, GENRES };
 
 export const TIERS = [
-  { name: 'Herd', pts: 5 },
-  { name: 'Common', pts: 15 },
-  { name: 'Uncommon', pts: 30 },
-  { name: 'Rare', pts: 55 },
-  { name: 'Fringe', pts: 80 },
-  { name: 'Outlier', pts: 100 },
+  { name: 'Ground Control', pts: 10, blurb: 'Everyone said this one.' },
+  { name: 'Copycat', pts: 15, blurb: 'Felt clever. So did everyone else.' },
+  { name: 'Low Orbit', pts: 30, blurb: 'Off the ground.' },
+  { name: 'Deep Space', pts: 60, blurb: 'Not many went this far.' },
+  { name: 'Far Out', pts: 85, blurb: 'Hardly anyone thinks of that.' },
+  { name: 'True Oddity', pts: 100, blurb: 'One of a kind.' },
 ];
 export const DAILY_COUNT = 7;
-export const DAILY_SECONDS = 30;
-export const LAUNCH = '2026-11-17';
+export const DAILY_SECONDS = 25;
+export const LAUNCH = '2026-11-01';
+
+// Points -> how far the rocket has flown. km values are real distances from Earth.
+export const LANDMARKS = [
+  { pts: 0, name: 'Launch pad', km: 0 },
+  { pts: 25, name: 'the clouds', km: 12 },
+  { pts: 55, name: 'the edge of space', km: 100 },
+  { pts: 85, name: 'the Space Station', km: 408 },
+  { pts: 125, name: 'the GPS satellites', km: 20200 },
+  { pts: 170, name: 'the Moon', km: 384400 },
+  { pts: 240, name: 'Mars', km: 2.25e8 },
+  { pts: 300, name: 'the asteroid belt', km: 4.1e8 },
+  { pts: 370, name: 'Jupiter', km: 7.8e8 },
+  { pts: 440, name: 'Saturn', km: 1.43e9 },
+  { pts: 510, name: 'Uranus', km: 2.87e9 },
+  { pts: 580, name: 'Neptune', km: 4.5e9 },
+  { pts: 640, name: 'Pluto', km: 5.9e9 },
+  { pts: 700, name: 'Voyager 1', km: 2.5e10 },
+  { pts: 850, name: 'the Oort Cloud', km: 1.5e12 },
+  { pts: 1050, name: 'Proxima Centauri', km: 4.0e13 },
+  { pts: 1400, name: 'the Pleiades', km: 4.2e15 },
+  { pts: 1900, name: 'the centre of the Milky Way', km: 2.5e17 },
+  { pts: 2600, name: 'Andromeda', km: 2.4e19 },
+  { pts: 4000, name: 'the edge of the observable universe', km: 4.4e23 },
+];
+export function reached(pts) {
+  let i = 0;
+  while (i + 1 < LANDMARKS.length && LANDMARKS[i + 1].pts <= pts) i++;
+  return LANDMARKS[i];
+}
+export function distanceKm(pts) {
+  const i = LANDMARKS.indexOf(reached(pts)), a = LANDMARKS[i], b = LANDMARKS[i + 1];
+  if (!b) return a.km;
+  const t = (pts - a.pts) / (b.pts - a.pts), lo = Math.max(a.km, 1);
+  return a.km === 0 ? b.km * t * t : lo * Math.pow(b.km / lo, t);
+}
+export function fmtDistance(km) {
+  const ly = km / 9.461e12;
+  if (ly >= 1e9) return `${(ly / 1e9).toFixed(1)} billion light-years`;
+  if (ly >= 1e6) return `${(ly / 1e6).toFixed(1)} million light-years`;
+  if (ly >= 1) return `${ly >= 100 ? Math.round(ly).toLocaleString('en') : ly.toFixed(1)} light-years`;
+  if (km >= 1e9) return `${(km / 1e9).toFixed(1)} billion km`;
+  if (km >= 1e6) return `${(km / 1e6).toFixed(1)} million km`;
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${(km < 10 ? Math.round(km * 10) / 10 : Math.round(km)).toLocaleString('en')} km`;
+}
 
 export const genreOf = id => GENRES.find(g => g.id === id) || GENRES[0];
 export const promptById = id => PROMPTS.find(p => p.id === id);
@@ -30,16 +75,18 @@ export function key(s) {
 
 function lev(a, b, max) {
   if (Math.abs(a.length - b.length) > max) return max + 1;
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let pp = null, prev = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     const cur = [i];
     let best = i;
     for (let j = 1; j <= b.length; j++) {
       cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      // swapped neighbours ("baskteball") count as one slip
+      if (pp && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) cur[j] = Math.min(cur[j], pp[j - 2] + 1);
       best = Math.min(best, cur[j]);
     }
     if (best > max) return max + 1;
-    prev = cur;
+    pp = prev; prev = cur;
   }
   return prev[b.length];
 }
@@ -63,29 +110,43 @@ function index(p) {
   return (p._idx = map);
 }
 
-// Judge one typed answer. Returns {ok, answer, tier, points} or {ok:false, reason}.
+const hit = e => ({ ok: true, answer: e.answer, tier: e.tier, points: TIERS[e.tier].pts });
+
+// Closest bank answer within a typo budget that grows with length, or null.
+export function closest(p, raw) {
+  const k = key(raw);
+  const max = k.length >= 10 ? 3 : k.length >= 6 ? 2 : k.length >= 4 ? 1 : 0;
+  if (!max) return null;
+  let best = null, bestD = max + 1;
+  for (const [mk, e] of index(p)) {
+    const d = lev(k, mk, max);
+    if (d < bestD || (d === bestD && best && e.tier < best.tier)) { best = e; bestD = d; }
+  }
+  return best;
+}
+
+// Judge one typed answer.
+//   {ok:true, answer, tier, points}          accepted
+//   {ok:false, reason:'suggest', suggest}    a close spelling exists: ask "Did you mean ...?"
+//   {ok:false, reason:'multiple'|'unknown'|'empty'}
 export function judge(p, input) {
   const raw = String(input || '').slice(0, 80);
-  if (!norm(raw)) return { ok: false, reason: 'empty' };
+  const words = norm(raw).split(' ').filter(Boolean);
+  if (!words.length) return { ok: false, reason: 'empty' };
   const map = index(p);
-  const hit = e => ({ ok: true, answer: e.answer, tier: e.tier, points: TIERS[e.tier].pts });
-  const words = norm(raw).split(' ');
-  // Exact, then without leading words ("los angeles lakers" -> "lakers").
-  for (let i = 0; i < words.length; i++) {
-    const e = map.get(key(words.slice(i).join(' ')));
-    if (e) return hit(e);
-  }
-  // Typo tolerance scales with length; very short answers must be exact.
-  const k = key(raw);
-  const max = k.length >= 9 ? 2 : k.length >= 5 ? 1 : 0;
-  if (max) {
-    let best = null, bestD = max + 1;
-    for (const [mk, e] of map) {
-      const d = lev(k, mk, max);
-      if (d < bestD) { best = e; bestD = d; }
+  const whole = map.get(key(raw));
+  if (whole) return hit(whole);
+  // Several separate answers typed at once ("red blue green") are refused, not a lucky dip.
+  const singles = new Set(words.map(w => map.get(key(w))).filter(Boolean));
+  if (singles.size > 1) return { ok: false, reason: 'multiple' };
+  // Extra words around a real answer: "los angeles lakers", "a golden retriever puppy".
+  for (let len = words.length - 1; len >= 1; len--)
+    for (let i = 0; i + len <= words.length; i++) {
+      const e = map.get(key(words.slice(i, i + len).join(' ')));
+      if (e && (i > 0 || len >= Math.ceil(words.length / 2))) return hit(e);
     }
-    if (best) return hit(best);
-  }
+  const near = closest(p, raw);
+  if (near) return { ok: false, reason: 'suggest', suggest: near.answer };
   return { ok: false, reason: 'unknown' };
 }
 
@@ -111,16 +172,24 @@ export function shuffle(arr, rand = Math.random) {
 
 // Daily is one UTC day for the whole world.
 export const todayKey = (d = new Date()) => d.toISOString().slice(0, 10);
-export const dayNumber = k => Math.round((Date.parse(k) - Date.parse(LAUNCH)) / 864e5) + 1;
+export const missionNumber = k => Math.round((Date.parse(k) - Date.parse(LAUNCH)) / 864e5) + 1;
+export const dateOfMission = n => new Date(Date.parse(LAUNCH) + (n - 1) * 864e5).toISOString().slice(0, 10);
 export function msToNextDay(now = Date.now()) { const d = new Date(now); d.setUTCHours(24, 0, 0, 0); return d - now; }
 
-// Each "cycle" is one shuffle of every prompt; consecutive days take the next 7, so nothing repeats within a cycle.
+// Each cycle is one shuffle of every prompt; days take the next 7 in turn, never more than one letter prompt and
+// never two from the same pack, so nothing repeats within a cycle and every mission feels mixed.
 export function dailyPrompts(k) {
   const perCycle = Math.floor(PROMPTS.length / DAILY_COUNT);
   const d = Math.floor(Date.parse(k) / 864e5);
-  const order = shuffle(PROMPTS.map(p => p.id).sort(), rng('outlier-cycle-' + Math.floor(d / perCycle)));
-  const start = (d % perCycle) * DAILY_COUNT;
-  return order.slice(start, start + DAILY_COUNT).map(promptById);
+  const cycle = Math.floor(d / perCycle);
+  const order = shuffle(PROMPTS.map(p => p.id).sort(), rng('oddity-cycle-' + cycle)).map(promptById);
+  // deal the cycle into days greedily so each day is varied
+  const days = Array.from({ length: perCycle }, () => []);
+  for (const p of order) {
+    const day = days.find(ds => ds.length < DAILY_COUNT && !ds.some(q => q.genre === p.genre)) || days.find(ds => ds.length < DAILY_COUNT);
+    if (day) day.push(p);
+  }
+  return days[d % perCycle];
 }
 
 export function pickPrompts(genre, n, avoid = [], rand = Math.random) {
@@ -130,5 +199,3 @@ export function pickPrompts(genre, n, avoid = [], rand = Math.random) {
   while (picked.length < n) picked.push(pool[Math.floor(rand() * pool.length)]);
   return picked;
 }
-
-export const sigma = pts => (pts / 100).toFixed(2);
