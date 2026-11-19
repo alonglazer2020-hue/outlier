@@ -57,7 +57,7 @@ Reply with JSON only: {"valid": true|false, "answer": "<the correct spelling of 
 rarity: 2 = fairly well known, 3 = uncommon, 4 = rare, 5 = almost nobody would say it. If unsure it is real or correct, valid=false.`);
     if (!out) return null;
     if (out.valid !== true) return { ok: false, reason: 'unknown' };
-    const tier = Math.min(5, Math.max(2, Math.round(Number(out.rarity) || 3)));
+    const tier = Math.min(4, Math.max(2, Math.round(Number(out.rarity) || 3))); // True Oddity is one hand-picked answer per prompt, so AI rulings top out at Far Out
     const answer = String(out.answer || text).toLowerCase().slice(0, 60).trim() || text;
     return { ok: true, answer, tier, points: TIERS[tier].pts, ai: true };
   }
@@ -95,7 +95,7 @@ Write 8 prompts about this topic. Rules:
 - Each prompt must be OPEN: at least 40 different correct answers exist. Never ask for one specific fact.
 - Mix easy and harder prompts, all clearly about the topic.
 - For each prompt give 40 to 80 correct answers, sorted into exactly 6 tiers by how many people would think of them:
-  tier 1: exactly ONE answer, the single answer most people would say first; tier 2: the other obvious answers and second thoughts; tiers 3-5: progressively less known; tier 6: true deep cuts that fans or experts know.
+  tier 1: the 2-4 answers almost everyone says first; tier 2: the obvious second thoughts; tiers 3-5: progressively less known, tier 5 being true deep cuts that fans or experts know; tier 6: exactly ONE answer, the single rarest correct answer of all.
 - Only real, verifiable answers. Lowercase. No duplicates. If an answer has a common alternative spelling or short name, write both joined with "/", e.g. "the boy who lived/harry potter".
 - "name" is a short pack title (2-4 words).
 If the topic is hateful, sexual or unsafe for a family party game, return {"name":"","prompts":[]}.`, { schema: PACK_SCHEMA, timeout: 40000 });

@@ -23,7 +23,7 @@ test('AI judge accepts, clamps rarity, caches, and refuses invalid', async () =>
   try {
     const ai = makeAiJudge({ apiKey: 'test', file });
     const a = await ai.judge(p, 'rufous hornero');
-    assert.deepEqual(a, { ok: true, answer: 'rufous hornero', tier: 5, points: 100, ai: true });
+    assert.deepEqual(a, { ok: true, answer: 'rufous hornero', tier: 4, points: 85, ai: true }); // AI rulings top out at Far Out
     assert.deepEqual(await ai.judge(p, 'Rufous  Hornero'), a, 'same key served from cache');
     assert.equal(calls.length, 1);
     assert.match(calls[0], /Name a bird/);

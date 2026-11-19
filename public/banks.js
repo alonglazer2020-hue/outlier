@@ -185,17 +185,17 @@ import { RAW_MORE } from './banks-more.js';
 
 export const GENRES = [];
 
-// Exactly 6 tiers, and only ONE answer in the top (most common) tier: the single answer everyone says first.
-// Extra top answers drop to the next tier; short lists split their biggest group (groups run best-known first).
+// Exactly 6 tiers, and only ONE answer in the rarest tier (True Oddity): the very last, rarest answer listed.
+// Short lists split their biggest group (groups run best-known first); the other rare answers become Far Out.
 export function sixTiers(tiers) {
   while (tiers.length > 6) tiers[5].push(...tiers.splice(6, 1)[0]);
-  if (tiers[0]?.length > 1) { const extra = tiers[0].splice(1); tiers.length > 1 ? tiers[1].unshift(...extra) : tiers.push(extra); }
   while (tiers.length < 6) {
-    const i = tiers.reduce((b, t, j) => (j > 0 && t.length > tiers[b].length ? j : b), 1);
+    const i = tiers.reduce((b, t, j) => (t.length > tiers[b].length ? j : b), 0);
     const g = tiers[i];
-    if (!g || g.length < 2) break;
+    if (g.length < 2) break;
     tiers.splice(i, 1, g.slice(0, Math.ceil(g.length / 2)), g.slice(Math.ceil(g.length / 2)));
   }
+  if (tiers.length === 6 && tiers[5].length > 1) tiers[4].push(...tiers[5].splice(0, tiers[5].length - 1));
   return tiers;
 }
 export const PROMPTS = [];
@@ -211,7 +211,9 @@ export const PROMPTS = [];
       const people = line.startsWith('~');
       pending = { text: people ? line.slice(1) : line, people };
     } else {
-      const tiers = line.split('|').map(g => g.split(',').map(a => a.trim()).filter(Boolean).map(a => a.split('/').map(s => s.trim()).filter(Boolean)));
+      const seen = new Set(); // an answer listed twice keeps only its first (more common) place
+      const tiers = line.split('|').map(g => g.split(',').map(a => a.trim()).filter(Boolean).map(a => a.split('/').map(s => s.trim()).filter(Boolean))
+        .filter(a => { const k = a[0].toLowerCase(); return !seen.has(k) && seen.add(k); }));
       sixTiers(tiers);
       const n = PROMPTS.filter(p => p.genre === genre.id).length;
       PROMPTS.push({ id: `${genre.id}-${n}`, genre: genre.id, text: pending.text, people: pending.people, tiers });
@@ -240,8 +242,13 @@ export const PROMPTS = [];
     const good = Object.entries(byLetter).filter(([, t]) => t.flat().length >= 18 && t.filter(g => g.length).length >= 4)
       .sort((a, b) => b[1].flat().length - a[1].flat().length).slice(0, 8);
     for (const [L, tiers] of good) {
-      // keep tiers non-empty: borrow from the nearest neighbour
-      for (let i = 0; i < 6; i++) if (!tiers[i].length) { const j = tiers.findIndex((g, k) => k > i && g.length > 1) ; if (j > 0) tiers[i].push(tiers[j].shift()); }
+      // keep tiers non-empty: borrow the best-known answer of a later tier, or for the last tier the rarest of an earlier one
+      for (let i = 0; i < 6; i++) if (!tiers[i].length) {
+        const j = tiers.findIndex((g, k) => k > i && g.length > 1);
+        if (j > 0) { tiers[i].push(tiers[j].shift()); continue; }
+        const e = tiers.findLastIndex((g, k) => k < i && g.length > 1);
+        if (e >= 0) tiers[i].push(tiers[e].pop());
+      }
       sixTiers(tiers);
       if (tiers.length !== 6 || tiers.some(g => !g.length)) continue;
       PROMPTS.push({ id: `words-${what.split(' ')[1]}-${L}`, genre: words.id, text: `Name ${what} whose name starts with the letter ${L}`, people: false, tiers });
