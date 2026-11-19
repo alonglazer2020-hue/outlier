@@ -144,6 +144,11 @@ const server = http.createServer(async (req, res) => {
       const pack = await makePack(topic);
       return pack ? send(res, 200, { pack }) : send(res, 422, { error: 'Couldn’t build a good pack for that topic. Try wording it differently.' });
     }
+    if (url.pathname === '/api/ai-status' && req.method === 'GET') {
+      if (limited(req, 'pack', 8, 10 * 60e3)) return send(res, 429, { error: 'busy' });
+      const use = /^[a-z0-9.-]{3,60}$/.test(url.searchParams.get('model') || '') ? url.searchParams.get('model') : undefined;
+      return send(res, 200, await ai.status(use));
+    }
     const packMatch = url.pathname.match(/^\/api\/pack\/([a-z0-9]{6,16})$/);
     if (packMatch && req.method === 'GET') { const p = CUSTOM.get(packMatch[1]); return p ? send(res, 200, { pack: p }) : send(res, 404, { error: 'Pack not found.' }); }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Method not allowed' });

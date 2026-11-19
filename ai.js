@@ -12,18 +12,29 @@ export function makeAiJudge({ apiKey = process.env.GEMINI_API_KEY, model = proce
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => fs.mkdir(path.dirname(file), { recursive: true }, () => fs.writeFile(file, JSON.stringify(cache), () => {})), 1000); };
 
   // One call to Gemini that must answer with JSON. Returns the parsed object, or null on any failure.
-  async function ask(text, { schema, timeout = 8000 } = {}) {
+  let lastError = '';
+  async function ask(text, { schema, timeout = 8000, use = model } = {}) {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), timeout);
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${use}:generateContent?key=${apiKey}`, {
         method: 'POST', signal: ctl.signal, headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text }] }], generationConfig: { temperature: schema ? 0.7 : 0, responseMimeType: 'application/json', ...(schema && { responseSchema: schema }) } }),
       });
-      if (!res.ok) { console.error('gemini', res.status, (await res.text()).slice(0, 300)); return null; }
+      if (!res.ok) { lastError = `${res.status} ${(await res.text()).slice(0, 300)}`; console.error('gemini', lastError); return null; }
       const data = await res.json();
       return JSON.parse(data?.candidates?.[0]?.content?.parts?.[0]?.text || 'null');
-    } catch (e) { console.error('gemini', e.name, e.message); return null; } finally { clearTimeout(t); }
+    } catch (e) { lastError = `${e.name} ${e.message}`; console.error('gemini', lastError); return null; } finally { clearTimeout(t); }
+  }
+
+  // Diagnostics without exposing the key: which flash models the key can use, and how one tiny call goes.
+  async function status(use = model) {
+    let models = [];
+    try { const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${apiKey}`); models = (await r.json()).models?.map(m => m.name.replace('models/', '')).filter(n => /flash/.test(n)) || []; } catch {}
+    lastError = '';
+    const t0 = Date.now();
+    const out = await ask('Reply with JSON {"ok": true}', { use, timeout: 30000 });
+    return { model: use, ok: out?.ok === true, ms: Date.now() - t0, error: lastError.replace(apiKey, '***'), models };
   }
 
   async function rule(p, text) {
@@ -55,6 +66,7 @@ rarity: 2 = fairly well known, 3 = uncommon, 4 = rare, 5 = almost nobody would s
 
   return {
     enabled: !!apiKey,
+    status: use => (apiKey ? status(use) : { ok: false, error: 'no key' }),
     async judge(p, text) {
       if (!apiKey) return null;
       const k = p.id + '|' + key(text);
