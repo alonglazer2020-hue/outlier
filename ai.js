@@ -5,7 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { key, TIERS } from './public/engine.js';
 
-export function makeAiJudge({ apiKey = process.env.GEMINI_API_KEY, model = process.env.GEMINI_MODEL || 'gemini-flash-latest', file } = {}) {
+// Tried in order: Google retires and overloads models often, so a busy/retired/slow one falls through to the next.
+const MODELS = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-flash-latest').split(',');
+
+export function makeAiJudge({ apiKey = process.env.GEMINI_API_KEY, models = MODELS, file } = {}) {
+  const model = models[0];
   let cache = {};
   try { cache = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
   let saveT = null;
@@ -13,7 +17,12 @@ export function makeAiJudge({ apiKey = process.env.GEMINI_API_KEY, model = proce
 
   // One call to Gemini that must answer with JSON. Returns the parsed object, or null on any failure.
   let lastError = '';
-  async function ask(text, { schema, timeout = 8000, use = model } = {}) {
+  async function ask(text, opts = {}) {
+    if (opts.use) return askOne(text, opts);
+    for (const use of models) { const out = await askOne(text, { ...opts, use }); if (out !== null) return out; }
+    return null;
+  }
+  async function askOne(text, { schema, timeout = 8000, use = model } = {}) {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), timeout);
     try {
@@ -88,7 +97,7 @@ Write 8 prompts about this topic. Rules:
   tier 1: the 2-4 answers almost everyone says first; tier 2: the obvious second thoughts; tiers 3-5: progressively less known; tier 6: true deep cuts that fans or experts know.
 - Only real, verifiable answers. Lowercase. No duplicates. If an answer has a common alternative spelling or short name, write both joined with "/", e.g. "the boy who lived/harry potter".
 - "name" is a short pack title (2-4 words).
-If the topic is hateful, sexual or unsafe for a family party game, return {"name":"","prompts":[]}.`, { schema: PACK_SCHEMA, timeout: 55000 });
+If the topic is hateful, sexual or unsafe for a family party game, return {"name":"","prompts":[]}.`, { schema: PACK_SCHEMA, timeout: 40000 });
     },
   };
 }

@@ -93,7 +93,7 @@ test('multiplayer: create, join, answer, shared answers halve, final', async () 
 
 test('multiplayer: misspelling asks, and is taken as meant when the clock runs out', async () => {
   const a = client(); await a.open();
-  a.send({ t: 'create', name: 'Solo', settings: { genre: 'sports', rounds: 5, seconds: 5 } });
+  a.send({ t: 'create', name: 'Solo', settings: { genre: 'food', rounds: 5, seconds: 5 } });
   await a.until(m => m.t === 'joined');
   a.send({ t: 'start' });
   const r = await a.until(m => m.t === 'room' && m.phase === 'prompt');
