@@ -31,7 +31,7 @@ async function makePack(topic) {
   const pack = cleanPack(raw, newPackId(), topic);
   if (!pack) {
     // a short shape summary of what the AI sent, so a bad pack can be diagnosed without server logs
-    makePack.why = raw ? `ai sent ${raw.prompts?.length ?? 'no'} prompts: ${(raw.prompts || []).map(q => (q.tiers || []).map(t => t?.length ?? 0).join('/')).join(' ')}` : 'ai gave no answer';
+    makePack.why = raw ? `ai sent ${raw.prompts?.length ?? 'no'} prompts: ${(raw.prompts || []).map(q => (q.tiers || []).map(t => t?.length ?? 0).join('/')).join(' ')}` : `ai gave no answer: ${ai.lastError.slice(0, 400)}`;
     console.error('pack rejected', topic, makePack.why);
     return null;
   }

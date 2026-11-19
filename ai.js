@@ -76,6 +76,7 @@ rarity: 2 = fairly well known, 3 = uncommon, 4 = rare, 5 = almost nobody would s
   return {
     enabled: !!apiKey,
     status: use => (apiKey ? status(use) : { ok: false, error: 'no key' }),
+    get lastError() { return lastError.replace(apiKey, '***'); },
     async judge(p, text) {
       if (!apiKey) return null;
       const k = p.id + '|' + key(text);
