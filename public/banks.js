@@ -185,12 +185,15 @@ import { RAW_MORE } from './banks-more.js';
 
 export const GENRES = [];
 
-// Exactly 6 tiers: split the biggest group in half while short (groups run best-known first); fold extras into the last.
+// Exactly 6 tiers, and only ONE answer in the top (most common) tier: the single answer everyone says first.
+// Extra top answers drop to the next tier; short lists split their biggest group (groups run best-known first).
 export function sixTiers(tiers) {
   while (tiers.length > 6) tiers[5].push(...tiers.splice(6, 1)[0]);
+  if (tiers[0]?.length > 1) { const extra = tiers[0].splice(1); tiers.length > 1 ? tiers[1].unshift(...extra) : tiers.push(extra); }
   while (tiers.length < 6) {
-    const i = tiers.reduce((b, t, j) => (t.length > tiers[b].length ? j : b), 0);
+    const i = tiers.reduce((b, t, j) => (j > 0 && t.length > tiers[b].length ? j : b), 1);
     const g = tiers[i];
+    if (!g || g.length < 2) break;
     tiers.splice(i, 1, g.slice(0, Math.ceil(g.length / 2)), g.slice(Math.ceil(g.length / 2)));
   }
   return tiers;
@@ -239,7 +242,8 @@ export const PROMPTS = [];
     for (const [L, tiers] of good) {
       // keep tiers non-empty: borrow from the nearest neighbour
       for (let i = 0; i < 6; i++) if (!tiers[i].length) { const j = tiers.findIndex((g, k) => k > i && g.length > 1) ; if (j > 0) tiers[i].push(tiers[j].shift()); }
-      if (tiers.some(g => !g.length)) continue;
+      sixTiers(tiers);
+      if (tiers.length !== 6 || tiers.some(g => !g.length)) continue;
       PROMPTS.push({ id: `words-${what.split(' ')[1]}-${L}`, genre: words.id, text: `Name ${what} whose name starts with the letter ${L}`, people: false, tiers });
     }
   }

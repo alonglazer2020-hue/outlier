@@ -11,6 +11,7 @@ test('banks parse into well-formed prompts', () => {
   for (const p of PROMPTS) {
     assert.equal(p.tiers.length, TIERS.length, `${p.id} "${p.text}" has ${p.tiers.length} tiers`);
     assert.ok(p.tiers.every(t => t.length), `${p.id} has an empty tier`);
+    assert.equal(p.tiers[0].length, 1, `${p.id} must have exactly one top answer`);
     assert.ok(p.tiers.flat().length >= 15, `${p.id} has too few answers`);
     assert.ok(!p.tiers.flat().flat().some(a => /\?\s*no$|\bdup$/.test(a)), `${p.id} has an authoring note`);
   }
@@ -99,6 +100,7 @@ test('cleanPack: validates, dedupes, makes 6 tiers, rejects junk', async () => {
   assert.equal(p.prompts.length, 5);
   assert.equal(p.prompts[0].text, 'Name thing 0');
   assert.equal(p.prompts[0].tiers.length, 6);
+  assert.equal(p.prompts[0].tiers[0].length, 1, 'one top answer; the other nine moved down');
   assert.ok(p.prompts[0].tiers.every(t => t.length));
   assert.equal(p.prompts[0].tiers.flat().length, 31, 'duplicate "Answer 0" dropped, extra kept');
   assert.ok(p.prompts[0].tiers.flat().some(a => a.join('/') === 'extra/alt name'), 'aliases kept');

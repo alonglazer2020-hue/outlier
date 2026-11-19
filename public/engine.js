@@ -61,7 +61,7 @@ export function fmtDistance(km) {
 
 // Custom packs (made by the AI on request) live apart from PROMPTS so they never reach the daily or "Everything".
 export const CUSTOM = new Map(); // pack id -> { id, name, topic, prompts }
-export const addPack = pack => (CUSTOM.set(pack.id, pack), pack);
+export const addPack = pack => (pack.prompts.forEach(q => sixTiers(q.tiers)), CUSTOM.set(pack.id, pack), pack); // re-normalise packs saved before a rule change
 const PACK_COLOR = '#ffd84a';
 export const genreOf = id => {
   if (String(id).startsWith('pack:')) { const p = CUSTOM.get(id.slice(5)); return { id, name: p ? p.name : 'Custom pack', color: PACK_COLOR }; }

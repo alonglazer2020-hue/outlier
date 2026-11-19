@@ -95,7 +95,7 @@ Write 8 prompts about this topic. Rules:
 - Each prompt must be OPEN: at least 40 different correct answers exist. Never ask for one specific fact.
 - Mix easy and harder prompts, all clearly about the topic.
 - For each prompt give 40 to 80 correct answers, sorted into exactly 6 tiers by how many people would think of them:
-  tier 1: the 2-4 answers almost everyone says first; tier 2: the obvious second thoughts; tiers 3-5: progressively less known; tier 6: true deep cuts that fans or experts know.
+  tier 1: exactly ONE answer, the single answer most people would say first; tier 2: the other obvious answers and second thoughts; tiers 3-5: progressively less known; tier 6: true deep cuts that fans or experts know.
 - Only real, verifiable answers. Lowercase. No duplicates. If an answer has a common alternative spelling or short name, write both joined with "/", e.g. "the boy who lived/harry potter".
 - "name" is a short pack title (2-4 words).
 If the topic is hateful, sexual or unsafe for a family party game, return {"name":"","prompts":[]}.`, { schema: PACK_SCHEMA, timeout: 40000 });
