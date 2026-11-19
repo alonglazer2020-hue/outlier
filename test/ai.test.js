@@ -30,3 +30,16 @@ test('AI judge accepts, clamps rarity, caches, and refuses invalid', async () =>
     assert.deepEqual(await ai.judge(p, 'toaster'), { ok: false, reason: 'unknown' });
   } finally { globalThis.fetch = real; }
 });
+
+test('makePack asks Gemini with a schema and returns its JSON', async () => {
+  const real = globalThis.fetch;
+  let body;
+  globalThis.fetch = async (url, opts) => { body = JSON.parse(opts.body); return reply({ name: 'Space', prompts: [] }); };
+  try {
+    const ai = makeAiJudge({ apiKey: 'test', file });
+    assert.deepEqual(await ai.makePack('outer space'), { name: 'Space', prompts: [] });
+    assert.match(body.contents[0].parts[0].text, /Topic: "outer space"/);
+    assert.equal(body.generationConfig.responseSchema.required[1], 'prompts');
+    assert.equal(await makeAiJudge({ apiKey: '', file }).makePack('x'), null);
+  } finally { globalThis.fetch = real; }
+});

@@ -149,8 +149,8 @@ form.answer .btn { min-height: 54px; }
 .shake { animation: shake .35s steps(6); }
 @keyframes shake { 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
 .reveal { display: flex; flex-direction: column; gap: 8px; }
-.stamp { font: 700 clamp(2.2rem, 10vw, 3.6rem)/1 var(--pixel); color: var(--tc); text-transform: uppercase; letter-spacing: .03em; animation: stamp .5s steps(5) both; text-shadow: 0 4px 0 rgba(0, 0, 0, .35); }
-@keyframes stamp { from { transform: scale(1.5); } }
+.stamp { font: 700 clamp(2rem, 9vw, 3.4rem)/1.05 var(--pixel); color: var(--tc); text-transform: uppercase; letter-spacing: .03em; overflow-wrap: anywhere; transform-origin: left center; animation: stamp .45s steps(4) both; text-shadow: 0 4px 0 rgba(0, 0, 0, .35); }
+@keyframes stamp { from { transform: scale(1.18); } }
 .said { font-size: 1.15rem; }
 .said b { font-family: var(--pixel); font-weight: 700; font-size: 1.25rem; }
 .pts { font: 700 1.25rem var(--pixel); color: var(--tc); }

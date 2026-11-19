@@ -184,6 +184,17 @@ the wheel/wheel, light bulb/lightbulb, the internet/internet | telephone/phone, 
 import { RAW_MORE } from './banks-more.js';
 
 export const GENRES = [];
+
+// Exactly 6 tiers: split the biggest group in half while short (groups run best-known first); fold extras into the last.
+export function sixTiers(tiers) {
+  while (tiers.length > 6) tiers[5].push(...tiers.splice(6, 1)[0]);
+  while (tiers.length < 6) {
+    const i = tiers.reduce((b, t, j) => (t.length > tiers[b].length ? j : b), 0);
+    const g = tiers[i];
+    tiers.splice(i, 1, g.slice(0, Math.ceil(g.length / 2)), g.slice(Math.ceil(g.length / 2)));
+  }
+  return tiers;
+}
 export const PROMPTS = [];
 
 (function parse() {
@@ -198,12 +209,7 @@ export const PROMPTS = [];
       pending = { text: people ? line.slice(1) : line, people };
     } else {
       const tiers = line.split('|').map(g => g.split(',').map(a => a.trim()).filter(Boolean).map(a => a.split('/').map(s => s.trim()).filter(Boolean)));
-      // Fewer than 6 groups: split the biggest group in half (groups are written best-known first).
-      while (tiers.length < 6) {
-        const i = tiers.reduce((b, t, j) => (t.length > tiers[b].length ? j : b), 0);
-        const g = tiers[i];
-        tiers.splice(i, 1, g.slice(0, Math.ceil(g.length / 2)), g.slice(Math.ceil(g.length / 2)));
-      }
+      sixTiers(tiers);
       const n = PROMPTS.filter(p => p.genre === genre.id).length;
       PROMPTS.push({ id: `${genre.id}-${n}`, genre: genre.id, text: pending.text, people: pending.people, tiers });
       pending = null;

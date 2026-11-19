@@ -1,4 +1,4 @@
-import { GENRES, PROMPTS, TIERS, judge, rarer, dailyPrompts, todayKey, missionNumber, dateOfMission, msToNextDay, pickPrompts, genreOf, promptById, reached, distanceKm, fmtDistance, DAILY_COUNT, DAILY_SECONDS } from './engine.js';
+import { GENRES, PROMPTS, TIERS, judge, rarer, dailyPrompts, todayKey, missionNumber, dateOfMission, msToNextDay, pickPrompts, genreOf, promptById, reached, distanceKm, fmtDistance, DAILY_COUNT, DAILY_SECONDS, CUSTOM, addPack } from './engine.js';
 import { createScene } from './scene.js';
 import { sfx } from './sound.js';
 
@@ -126,6 +126,12 @@ function unlimited() {
       <button class="btn" data-mode="classic" aria-pressed="${mode === 'classic'}">Classic<small>7 prompts, then land</small></button>
       <button class="btn" data-mode="endless" aria-pressed="${mode === 'endless'}">Endless<small>3 fuel cells. Miss = lose one</small></button>
     </div>
+    <section class="px panel"><h2 class="pixel">Make your own pack</h2>
+      <p class="muted">Type any topic. The AI writes the prompts and answers in under a minute.</p>
+      <form class="answer" id="mkf" autocomplete="off"><label for="topic" class="visually-hidden">Pack topic</label><input id="topic" class="field" maxlength="80" placeholder="e.g. Fortnite, Israeli food, 90s cartoons"><button class="btn primary">Make</button></form>
+      <div class="fb" id="mkmsg" aria-live="polite"></div>
+      ${myPacks().length ? `<div class="packs">${myPacks().map(p => `<button class="btn" data-g="pack:${p.id}">${planet('pack:' + p.id)}<span>${esc(p.name)}<small>${p.prompts.length} prompts · yours</small></span></button>`).join('')}</div>` : ''}
+    </section>
     <section class="px panel"><h2 class="pixel">Pick a pack</h2>
       <div class="packs">
         <button class="btn" data-g="mixed">${planet('mixed')}<span>Everything<small>${PROMPTS.length} prompts</small></span></button>
@@ -134,6 +140,39 @@ function unlimited() {
     </section>`);
   app.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => { store.set('umode', b.dataset.mode); app.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', x === b)); }));
   app.querySelectorAll('[data-g]').forEach(b => b.addEventListener('click', () => startUnlimited(b.dataset.g, store.get('umode', 'classic'))));
+  $('#mkf').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = e.submitter || $('#mkf button'), msg = $('#mkmsg'), topic = $('#topic').value.trim();
+    if (topic.length < 2) { msg.className = 'fb bad'; msg.textContent = 'Type a topic first.'; return; }
+    btn.disabled = true; msg.className = 'fb';
+    const t0 = Date.now(), tick = setInterval(() => (msg.textContent = `Building your “${topic}” pack… ${Math.round((Date.now() - t0) / 1000)}s`), 500);
+    try {
+      const pack = await makePack(topic);
+      clearInterval(tick); msg.textContent = `Ready: ${pack.name}!`; sfx.launch();
+      startUnlimited('pack:' + pack.id, store.get('umode', 'classic'));
+    } catch (err) {
+      clearInterval(tick); msg.className = 'fb bad'; msg.textContent = err.message; btn.disabled = false;
+    }
+  });
+}
+
+// Custom packs: made by the server's AI, kept in this browser so they survive server restarts.
+const myPacks = () => store.get('packs', []);
+function keepPack(pack) { addPack(pack); store.set('packs', [pack, ...myPacks().filter(p => p.id !== pack.id)].slice(0, 20)); }
+async function makePack(topic) {
+  const res = await fetch('/api/pack', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topic }) }).catch(() => null);
+  const data = await res?.json().catch(() => null);
+  if (!res) throw new Error('Could not reach the server. Try again in a moment.');
+  if (!res.ok || !data?.pack) throw new Error(data?.error || 'Something went wrong making that pack.');
+  keepPack(data.pack);
+  return data.pack;
+}
+// Other players need the room's pack before they can show its prompts.
+async function ensurePack(genre) {
+  if (!String(genre).startsWith('pack:') || CUSTOM.has(genre.slice(5))) return true;
+  const data = await fetch('/api/pack/' + genre.slice(5)).then(r => (r.ok ? r.json() : null)).catch(() => null);
+  if (data?.pack) addPack(data.pack);
+  return !!data?.pack;
 }
 function friends(code = '') {
   page('Play with friends', `
@@ -460,6 +499,7 @@ const me = s => s.players.find(p => p.id === s.you);
 const inviteUrl = s => `${location.origin}/?room=${s.code}`;
 function renderMp() {
   const s = M.snap; if (!s) return;
+  if (!CUSTOM.has(String(s.settings.genre).slice(5)) && String(s.settings.genre).startsWith('pack:')) { ensurePack(s.settings.genre).then(ok => ok && M.snap === s && renderMp()); if (s.phase !== 'lobby') return; }
   const key = s.phase + ':' + s.round, fresh = key !== M.key; M.key = key;
   if (s.phase === 'lobby') return lobby(s, fresh);
   if (s.phase === 'prompt') return mpPrompt(s, fresh);
@@ -498,7 +538,7 @@ function lobby(s, fresh) {
       <ul class="people" id="people">${people(s)}</ul>
       <h2 class="pixel">Game</h2>
       ${host ? `<div class="settings">
-        <div class="wide"><label class="lbl" for="s-genre">Pack</label><select id="s-genre" class="field"><option value="mixed">Everything</option>${GENRES.map(g => `<option value="${g.id}" ${g.id === s.settings.genre ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
+        <div class="wide"><label class="lbl" for="s-genre">Pack</label><select id="s-genre" class="field"><option value="mixed">Everything</option>${GENRES.map(g => `<option value="${g.id}" ${g.id === s.settings.genre ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}${myPacks().length ? `<optgroup label="Your packs">${myPacks().map(p => `<option value="pack:${p.id}" ${'pack:' + p.id === s.settings.genre ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</optgroup>` : ''}</select></div>
         <div><label class="lbl" for="s-rounds">Prompts</label><select id="s-rounds" class="field">${opt([5, 7, 10, 15, 20, 30, 50], s.settings.rounds)}</select></div>
         <div><label class="lbl" for="s-seconds">Seconds</label><select id="s-seconds" class="field">${opt([5, 10, 15, 20, 25, 30, 45, 60], s.settings.seconds)}</select></div>
       </div>` : `<p class="muted" id="sumset">${setSummary(s)}</p>`}
@@ -509,7 +549,10 @@ function lobby(s, fresh) {
   $('#invite').addEventListener('click', () => share(`Join my ODDITY room: ${s.code}`, inviteUrl(s)));
   $('#copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(inviteUrl(s)); banner('Invite link copied'); } catch { banner(inviteUrl(s), 6000); } });
   if (host) {
-    for (const k of ['genre', 'rounds', 'seconds']) $('#s-' + k).addEventListener('change', e => mpSend({ t: 'settings', settings: { [k]: e.target.value } }));
+    for (const k of ['genre', 'rounds', 'seconds']) $('#s-' + k).addEventListener('change', e => {
+      const v = e.target.value, pack = v.startsWith('pack:') ? myPacks().find(p => 'pack:' + p.id === v) : null;
+      mpSend({ t: 'settings', settings: { [k]: v }, ...(pack && { pack }) }); // send the pack along in case the server lost it
+    });
     $('#start').addEventListener('click', () => mpSend({ t: 'start' }));
   }
   if (s.autoStartAt) tick(() => { if (!$('.lobby') || M.snap?.phase !== 'lobby') return false; $('#lstatus').textContent = lobbyStatus(M.snap, M.snap.hostId === M.snap.you); });
@@ -577,6 +620,7 @@ function mpFinal(s) {
 }
 
 // ---------- boot ----------
+for (const p of myPacks()) addPack(p);
 if (M.seat) { M.wanted = true; mpConnect(); banner('Rejoining your room…', 0); app.innerHTML = '<p class="boot">Rejoining…</p>'; }
 else if (location.hash === '#/play' || location.hash === '#/room') { history.replaceState(null, '', '/#/'); route(); }
 else route();

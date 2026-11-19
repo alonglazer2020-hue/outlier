@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import WebSocket from 'ws';
-import { dailyPrompts, todayKey, promptById } from '../public/engine.js';
+import { dailyPrompts, todayKey, promptById, judge } from '../public/engine.js';
 
 const PORT = 3999, BASE = `http://localhost:${PORT}`;
 let proc;
@@ -98,7 +98,8 @@ test('multiplayer: misspelling asks, and is taken as meant when the clock runs o
   a.send({ t: 'start' });
   const r = await a.until(m => m.t === 'room' && m.phase === 'prompt');
   const p = promptById(r.prompt.id);
-  const word = p.tiers[2].map(x => x[0]).find(w => w.length >= 7 && !w.includes(' '));
+  // a word whose swapped letters differ, and whose typo is not itself another answer
+  const word = p.tiers.flat().map(x => x[0]).find(w => w.length >= 7 && !w.includes(' ') && w[2] !== w[3] && !judge(p, w.slice(0, 2) + w[3] + w[2] + w.slice(4)).ok);
   const typo = word.slice(0, 2) + word[3] + word[2] + word.slice(4); // swap two letters
   a.send({ t: 'answer', text: typo });
   const rej = await a.until(m => m.t === 'rejected');
@@ -107,6 +108,28 @@ test('multiplayer: misspelling asks, and is taken as meant when the clock runs o
   a.send({ t: 'answer', text: typo, final: true });
   const got = await a.until(m => m.t === 'room' && m.players[0].answer);
   assert.equal(got.players[0].answer.answer, word);
+  a.ws.close();
+});
+
+test('custom packs: refused without a key; a host can bring one into a room', async () => {
+  const r = await fetch(BASE + '/api/pack', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topic: 'cats' }) });
+  assert.equal(r.status, 503);
+  const words = Array.from({ length: 30 }, (_, i) => 'cat word ' + i);
+  const pack = { id: 'feedcafe01', name: 'Cats', topic: 'cats', prompts: Array.from({ length: 5 }, (_, i) => ({ text: 'Name a cat thing ' + i, tiers: [words] })) };
+  const a = client(); await a.open();
+  a.send({ t: 'create', name: 'Host', settings: { rounds: 5, seconds: 10 } });
+  await a.until(m => m.t === 'joined');
+  a.send({ t: 'settings', settings: { genre: 'pack:feedcafe01' }, pack });
+  const lob = await a.until(m => m.t === 'room' && m.settings.genre === 'pack:feedcafe01');
+  assert.equal(lob.settings.genre, 'pack:feedcafe01');
+  assert.equal((await (await fetch(BASE + '/api/pack/feedcafe01')).json()).pack.name, 'Cats');
+  a.send({ t: 'start' });
+  const pr = await a.until(m => m.t === 'room' && m.phase === 'prompt');
+  assert.match(pr.prompt.text, /^Name a cat thing/);
+  a.send({ t: 'answer', text: 'cat word 0' });
+  const got = await a.until(m => m.t === 'room' && m.players[0].answer);
+  assert.equal(got.players[0].answer.tier, 0);
+  a.send({ t: 'settings', settings: { genre: 'pack:nothere99' }, pack: { prompts: [{ text: 'x', tiers: [] }] } }); // junk pack is ignored
   a.ws.close();
 });
 

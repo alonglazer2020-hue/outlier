@@ -1,5 +1,5 @@
 // Shared game rules: used by the browser and by the server (which re-scores everything it records).
-import { PROMPTS, GENRES } from './banks.js';
+import { PROMPTS, GENRES, sixTiers } from './banks.js';
 export { PROMPTS, GENRES };
 
 export const TIERS = [
@@ -59,8 +59,31 @@ export function fmtDistance(km) {
   return `${(km < 10 ? Math.round(km * 10) / 10 : Math.round(km)).toLocaleString('en')} km`;
 }
 
-export const genreOf = id => GENRES.find(g => g.id === id) || GENRES[0];
-export const promptById = id => PROMPTS.find(p => p.id === id);
+// Custom packs (made by the AI on request) live apart from PROMPTS so they never reach the daily or "Everything".
+export const CUSTOM = new Map(); // pack id -> { id, name, topic, prompts }
+export const addPack = pack => (CUSTOM.set(pack.id, pack), pack);
+const PACK_COLOR = '#ffd84a';
+export const genreOf = id => {
+  if (String(id).startsWith('pack:')) { const p = CUSTOM.get(id.slice(5)); return { id, name: p ? p.name : 'Custom pack', color: PACK_COLOR }; }
+  return GENRES.find(g => g.id === id) || GENRES[0];
+};
+export const promptById = id => PROMPTS.find(p => p.id === id) || [...CUSTOM.values()].flatMap(p => p.prompts).find(p => p.id === id);
+
+// Turns untrusted pack JSON (from the AI, or a browser restoring a saved pack) into playable prompts, or null.
+export function cleanPack(raw, id, topic = '') {
+  if (!/^[a-z0-9]{6,16}$/.test(String(id)) || !raw || !Array.isArray(raw.prompts)) return null;
+  const prompts = raw.prompts.slice(0, 10).map((q, n) => {
+    const text = String(q?.text || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    const seen = new Set();
+    const groups = (Array.isArray(q?.tiers) ? q.tiers : []).slice(0, 8).map(g => (Array.isArray(g) ? g : []).slice(0, 80).map(a => {
+      const aliases = String(a).toLowerCase().replace(/[|,]/g, ' ').split('/').map(s => s.replace(/\s+/g, ' ').trim().slice(0, 60)).filter(s => key(s));
+      return aliases.length && !seen.has(key(aliases[0])) ? (seen.add(key(aliases[0])), aliases) : null;
+    }).filter(Boolean)).filter(g => g.length);
+    return { id: `pack-${id}-${n}`, genre: 'pack:' + id, text, people: false, tiers: groups };
+  }).filter(q => q.text && q.tiers.flat().length >= 15).map(q => (sixTiers(q.tiers), q));
+  if (prompts.length < 4) return null;
+  return { id, name: String(raw.name || topic || 'Custom pack').replace(/\s+/g, ' ').trim().slice(0, 40), topic: String(topic || raw.topic || '').slice(0, 80), prompts };
+}
 
 // Normalised text as a player would mean it: accents, case, punctuation and leading articles ignored.
 export function norm(s) {
@@ -193,7 +216,8 @@ export function dailyPrompts(k) {
 }
 
 export function pickPrompts(genre, n, avoid = [], rand = Math.random) {
-  const pool = PROMPTS.filter(p => genre === 'mixed' || p.genre === genre);
+  const pool = String(genre).startsWith('pack:') ? CUSTOM.get(genre.slice(5))?.prompts || [] : PROMPTS.filter(p => genre === 'mixed' || p.genre === genre);
+  if (!pool.length) return [];
   const fresh = pool.filter(p => !avoid.includes(p.id));
   const picked = shuffle(fresh.length >= n ? fresh : pool, rand).slice(0, n);
   while (picked.length < n) picked.push(pool[Math.floor(rand() * pool.length)]);

@@ -1,40 +1,57 @@
-// Optional AI judge for answers that are not in the bank. Off unless GEMINI_API_KEY is set (free key from aistudio.google.com).
-// Every ruling is cached so the same answer always gets the same verdict.
+// Optional AI (Google Gemini, free key from aistudio.google.com/apikey). Off unless GEMINI_API_KEY is set.
+//  - judge(): rules on answers that are not in a bank; every ruling is cached so the same answer always scores the same.
+//  - makePack(): writes a whole custom pack from a topic.
 import fs from 'node:fs';
 import path from 'node:path';
 import { key, TIERS } from './public/engine.js';
 
-export function makeAiJudge({ apiKey = process.env.GEMINI_API_KEY, model = process.env.GEMINI_MODEL || 'gemini-2.5-flash', file } = {}) {
+export function makeAiJudge({ apiKey = process.env.GEMINI_API_KEY, model = process.env.GEMINI_MODEL || 'gemini-flash-latest', file } = {}) {
   let cache = {};
   try { cache = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
   let saveT = null;
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => fs.mkdir(path.dirname(file), { recursive: true }, () => fs.writeFile(file, JSON.stringify(cache), () => {})), 1000); };
 
-  async function ask(p, text) {
+  // One call to Gemini that must answer with JSON. Returns the parsed object, or null on any failure.
+  async function ask(text, { schema, timeout = 8000 } = {}) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeout);
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST', signal: ctl.signal, headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text }] }], generationConfig: { temperature: schema ? 0.7 : 0, responseMimeType: 'application/json', ...(schema && { responseSchema: schema }) } }),
+      });
+      if (!res.ok) { console.error('gemini', res.status, (await res.text()).slice(0, 300)); return null; }
+      const data = await res.json();
+      return JSON.parse(data?.candidates?.[0]?.content?.parts?.[0]?.text || 'null');
+    } catch (e) { console.error('gemini', e.name, e.message); return null; } finally { clearTimeout(t); }
+  }
+
+  async function rule(p, text) {
     const common = p.tiers[0].map(a => a[0]).slice(0, 3).join(', ');
     const rare = p.tiers[5].map(a => a[0]).slice(0, 4).join(', ');
-    const instructions = `You referee a party game. Players get a prompt and type one answer. Decide if the answer truly fits the prompt (real thing, correct category; small typos are fine).
+    const out = await ask(`You referee a party game. Players get a prompt and type one answer. Decide if the answer truly fits the prompt (real thing, correct category; small typos are fine).
 Prompt: "${p.text}"
 Player's answer: "${text}"
 For calibration, the most common answers are: ${common}. Very rare but valid answers include: ${rare}.
 Reply with JSON only: {"valid": true|false, "answer": "<the correct spelling of what they meant, lowercase>", "rarity": 2|3|4|5}
-rarity: 2 = fairly well known, 3 = uncommon, 4 = rare, 5 = almost nobody would say it. If unsure it is real or correct, valid=false.`;
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 8000);
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-        method: 'POST', signal: ctl.signal, headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: instructions }] }], generationConfig: { temperature: 0, responseMimeType: 'application/json' } }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      const out = JSON.parse(data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}');
-      if (out.valid !== true) return { ok: false, reason: 'unknown' };
-      const tier = Math.min(5, Math.max(2, Math.round(Number(out.rarity) || 3)));
-      const answer = String(out.answer || text).toLowerCase().slice(0, 60).trim() || text;
-      return { ok: true, answer, tier, points: TIERS[tier].pts, ai: true };
-    } catch { return null; } finally { clearTimeout(t); }
+rarity: 2 = fairly well known, 3 = uncommon, 4 = rare, 5 = almost nobody would say it. If unsure it is real or correct, valid=false.`);
+    if (!out) return null;
+    if (out.valid !== true) return { ok: false, reason: 'unknown' };
+    const tier = Math.min(5, Math.max(2, Math.round(Number(out.rarity) || 3)));
+    const answer = String(out.answer || text).toLowerCase().slice(0, 60).trim() || text;
+    return { ok: true, answer, tier, points: TIERS[tier].pts, ai: true };
   }
+
+  const PACK_SCHEMA = {
+    type: 'OBJECT', required: ['name', 'prompts'],
+    properties: {
+      name: { type: 'STRING' },
+      prompts: { type: 'ARRAY', items: { type: 'OBJECT', required: ['text', 'tiers'], properties: {
+        text: { type: 'STRING' },
+        tiers: { type: 'ARRAY', items: { type: 'ARRAY', items: { type: 'STRING' } } },
+      } } },
+    },
+  };
 
   return {
     enabled: !!apiKey,
@@ -42,9 +59,24 @@ rarity: 2 = fairly well known, 3 = uncommon, 4 = rare, 5 = almost nobody would s
       if (!apiKey) return null;
       const k = p.id + '|' + key(text);
       if (cache[k]) return cache[k];
-      const r = await ask(p, String(text).slice(0, 60));
+      const r = await rule(p, String(text).slice(0, 60));
       if (r) { cache[k] = r; save(); } // network failures are not cached
       return r;
+    },
+    // Raw pack JSON for a topic (the caller validates it with cleanPack), or null.
+    async makePack(topic) {
+      if (!apiKey) return null;
+      return ask(`You write question packs for ODDITY, a party game where players must name the RAREST correct answer.
+Topic: "${topic}"
+Write 8 prompts about this topic. Rules:
+- Each prompt is one full, clear sentence starting with "Name", e.g. "Name a character who appears in the Harry Potter books or films".
+- Each prompt must be OPEN: at least 40 different correct answers exist. Never ask for one specific fact.
+- Mix easy and harder prompts, all clearly about the topic.
+- For each prompt give 40 to 80 correct answers, sorted into exactly 6 tiers by how many people would think of them:
+  tier 1: the 2-4 answers almost everyone says first; tier 2: the obvious second thoughts; tiers 3-5: progressively less known; tier 6: true deep cuts that fans or experts know.
+- Only real, verifiable answers. Lowercase. No duplicates. If an answer has a common alternative spelling or short name, write both joined with "/", e.g. "the boy who lived/harry potter".
+- "name" is a short pack title (2-4 words).
+If the topic is hateful, sexual or unsafe for a family party game, return {"name":"","prompts":[]}.`, { schema: PACK_SCHEMA, timeout: 55000 });
     },
   };
 }

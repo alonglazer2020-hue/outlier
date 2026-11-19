@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { judge, dailyPrompts, todayKey, pickPrompts, promptById, GENRES, DAILY_COUNT } from './public/engine.js';
+import { judge, dailyPrompts, todayKey, pickPrompts, promptById, GENRES, DAILY_COUNT, CUSTOM, addPack, cleanPack, key } from './public/engine.js';
 import { makeAiJudge } from './ai.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +14,24 @@ const DATA = process.env.DATA_DIR || path.join(ROOT, 'data');
 const PORT = Number(process.env.PORT) || 3000;
 fs.mkdirSync(DATA, { recursive: true });
 const ai = makeAiJudge({ file: path.join(DATA, 'ai-cache.json') });
+
+// ---------- Custom packs ----------
+// shortcut: packs live in memory + a JSON file on local disk; Render's free disk is wiped on restart. Players keep their own
+// packs in the browser and the lobby re-sends them, so a restart only loses the "same topic = instant" cache.
+const PACKS_FILE = path.join(DATA, 'packs.json');
+const byTopic = new Map();
+try { for (const p of JSON.parse(fs.readFileSync(PACKS_FILE, 'utf8'))) { addPack(p); if (p.topic) byTopic.set(key(p.topic), p.id); } } catch {}
+let packSaveT = null;
+const savePacks = () => { clearTimeout(packSaveT); packSaveT = setTimeout(() => fs.writeFile(PACKS_FILE, JSON.stringify([...CUSTOM.values()].slice(-500)), () => {}), 1000); };
+const newPackId = () => crypto.randomBytes(6).toString('hex');
+async function makePack(topic) {
+  const k = key(topic);
+  if (byTopic.has(k) && CUSTOM.has(byTopic.get(k))) return CUSTOM.get(byTopic.get(k));
+  const pack = cleanPack(await ai.makePack(topic), newPackId(), topic);
+  if (!pack) return null;
+  addPack(pack); byTopic.set(k, pack.id); savePacks();
+  return pack;
+}
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.ico': 'image/x-icon' };
 const cleanName = s => String(s || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 16) || 'Anonymous';
@@ -92,10 +110,10 @@ function readJson(req, limit = 8192) {
   });
 }
 const send = (res, status, json) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(json)); };
-const hits = new Map(); // per-IP rate limit for the AI judge
-function limited(req, max = 40) {
+const buckets = { judge: new Map(), pack: new Map() }; // per-IP rate limits for the AI
+function limited(req, bucket, max, windowMs) {
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress).split(',')[0];
-  const now = Date.now(), h = (hits.get(ip) || []).filter(t => now - t < 60e3);
+  const hits = buckets[bucket], now = Date.now(), h = (hits.get(ip) || []).filter(t => now - t < windowMs);
   h.push(now); hits.set(ip, h);
   return h.length > max;
 }
@@ -113,11 +131,21 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/judge' && req.method === 'POST') {
       if (!ai.enabled) return send(res, 200, { ok: false, reason: 'unknown' });
-      if (limited(req)) return send(res, 429, { ok: false, reason: 'busy' });
+      if (limited(req, 'judge', 40, 60e3)) return send(res, 429, { ok: false, reason: 'busy' });
       const body = await readJson(req, 1024), p = promptById(String(body.promptId || ''));
       if (!p) return send(res, 400, { ok: false, reason: 'unknown' });
       return send(res, 200, await fullJudge(p, String(body.text || '').slice(0, 80), !!body.final));
     }
+    if (url.pathname === '/api/pack' && req.method === 'POST') {
+      if (!ai.enabled) return send(res, 503, { error: 'Custom packs need the AI key on the server (GEMINI_API_KEY).' });
+      const topic = String((await readJson(req, 1024)).topic || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (topic.length < 2) return send(res, 400, { error: 'Type a topic first.' });
+      if (limited(req, 'pack', 8, 10 * 60e3)) return send(res, 429, { error: 'That’s a lot of packs! Wait a few minutes and try again.' });
+      const pack = await makePack(topic);
+      return pack ? send(res, 200, { pack }) : send(res, 422, { error: 'Couldn’t build a good pack for that topic. Try wording it differently.' });
+    }
+    const packMatch = url.pathname.match(/^\/api\/pack\/([a-z0-9]{6,16})$/);
+    if (packMatch && req.method === 'GET') { const p = CUSTOM.get(packMatch[1]); return p ? send(res, 200, { pack: p }) : send(res, 404, { error: 'Pack not found.' }); }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Method not allowed' });
     let file = path.normalize(path.join(PUBLIC, decodeURIComponent(url.pathname)));
     if (!file.startsWith(PUBLIC)) return send(res, 403, { error: 'Forbidden' });
@@ -139,7 +167,7 @@ const newCode = () => { let c; do c = String(crypto.randomInt(100000, 1000000));
 const clampInt = (v, lo, hi, d) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, Math.round(+v))) : d);
 function settingsFrom(s = {}) {
   return {
-    genre: s.genre === 'mixed' || GENRES.some(g => g.id === s.genre) ? s.genre : 'mixed',
+    genre: s.genre === 'mixed' || GENRES.some(g => g.id === s.genre) || (String(s.genre).startsWith('pack:') && CUSTOM.has(s.genre.slice(5))) ? s.genre : 'mixed',
     rounds: clampInt(s.rounds, 5, 50, 7),
     seconds: clampInt(s.seconds, 5, 60, 25),
   };
@@ -282,7 +310,12 @@ async function onMessage(ws, msg) {
   const isHost = room.hostId === player.id;
   switch (msg.t) {
     case 'settings':
-      if (isHost && room.phase === 'lobby') { room.settings = settingsFrom({ ...room.settings, ...msg.settings }); broadcast(room); }
+      if (isHost && room.phase === 'lobby') {
+        // a host may bring a pack the server no longer has (restart): re-validate it like any untrusted input
+        const g = String(msg.settings?.genre || '');
+        if (g.startsWith('pack:') && !CUSTOM.has(g.slice(5)) && msg.pack) { const p = cleanPack(msg.pack, g.slice(5), msg.pack.topic); if (p) { addPack(p); savePacks(); } }
+        room.settings = settingsFrom({ ...room.settings, ...msg.settings }); broadcast(room);
+      }
       break;
     case 'start':
       if (isHost) startGame(room);
@@ -316,7 +349,7 @@ async function onMessage(ws, msg) {
   }
 }
 
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096 });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 96 * 1024 }); // room settings can carry a custom pack
 wss.on('connection', ws => {
   ws.ctx = {};
   ws.alive = true;

@@ -86,3 +86,25 @@ test('pickPrompts respects pack and avoids recent', () => {
   assert.ok(got.every(p => p.genre === 'music' && p.id !== 'music-0' && p.id !== 'music-1'));
   assert.equal(key('Spider-Man'), key('spiderman'));
 });
+
+test('cleanPack: validates, dedupes, makes 6 tiers, rejects junk', async () => {
+  const { cleanPack, addPack, pickPrompts, promptById, genreOf, PROMPTS: ALL } = await import('../public/engine.js');
+  const answers = n => Array.from({ length: n }, (_, i) => 'answer ' + i);
+  const good = { name: 'Test   Pack', prompts: Array.from({ length: 5 }, (_, i) => ({ text: `Name   thing ${i}`, tiers: [answers(10), ['Answer 0', 'Extra/alt name'], answers(30).slice(10)] })) };
+  assert.equal(cleanPack(good, 'BAD ID'), null, 'bad id');
+  assert.equal(cleanPack({ prompts: [] }, 'abcdef12'), null, 'empty');
+  assert.equal(cleanPack({ prompts: good.prompts.slice(0, 3) }, 'abcdef12'), null, 'too few prompts');
+  const p = cleanPack(good, 'abcdef12', 'my topic');
+  assert.equal(p.name, 'Test Pack');
+  assert.equal(p.prompts.length, 5);
+  assert.equal(p.prompts[0].text, 'Name thing 0');
+  assert.equal(p.prompts[0].tiers.length, 6);
+  assert.ok(p.prompts[0].tiers.every(t => t.length));
+  assert.equal(p.prompts[0].tiers.flat().length, 31, 'duplicate "Answer 0" dropped, extra kept');
+  assert.ok(p.prompts[0].tiers.flat().some(a => a.join('/') === 'extra/alt name'), 'aliases kept');
+  addPack(p);
+  assert.equal(pickPrompts('pack:abcdef12', 3).every(q => q.genre === 'pack:abcdef12'), true);
+  assert.equal(promptById('pack-abcdef12-2').text, 'Name thing 2');
+  assert.equal(genreOf('pack:abcdef12').name, 'Test Pack');
+  assert.ok(!ALL.some(q => q.genre.startsWith('pack:')), 'custom prompts never join the built-in list');
+});
