@@ -27,8 +27,14 @@ const newPackId = () => crypto.randomBytes(6).toString('hex');
 async function makePack(topic) {
   const k = key(topic);
   if (byTopic.has(k) && CUSTOM.has(byTopic.get(k))) return CUSTOM.get(byTopic.get(k));
-  const pack = cleanPack(await ai.makePack(topic), newPackId(), topic);
-  if (!pack) return null;
+  const raw = await ai.makePack(topic);
+  const pack = cleanPack(raw, newPackId(), topic);
+  if (!pack) {
+    // a short shape summary of what the AI sent, so a bad pack can be diagnosed without server logs
+    makePack.why = raw ? `ai sent ${raw.prompts?.length ?? 'no'} prompts: ${(raw.prompts || []).map(q => (q.tiers || []).map(t => t?.length ?? 0).join('/')).join(' ')}` : 'ai gave no answer';
+    console.error('pack rejected', topic, makePack.why);
+    return null;
+  }
   addPack(pack); byTopic.set(k, pack.id); savePacks();
   return pack;
 }
@@ -142,7 +148,7 @@ const server = http.createServer(async (req, res) => {
       if (topic.length < 2) return send(res, 400, { error: 'Type a topic first.' });
       if (limited(req, 'pack', 8, 10 * 60e3)) return send(res, 429, { error: 'That’s a lot of packs! Wait a few minutes and try again.' });
       const pack = await makePack(topic);
-      return pack ? send(res, 200, { pack }) : send(res, 422, { error: 'Couldn’t build a good pack for that topic. Try wording it differently.' });
+      return pack ? send(res, 200, { pack }) : send(res, 422, { error: 'Couldn’t build a good pack for that topic. Try wording it differently.', detail: makePack.why });
     }
     if (url.pathname === '/api/ai-status' && req.method === 'GET') {
       if (limited(req, 'pack', 8, 10 * 60e3)) return send(res, 429, { error: 'busy' });
